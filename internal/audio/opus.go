@@ -22,8 +22,9 @@ const (
 // StreamEncoder encodes PCM audio to Opus incrementally.
 type StreamEncoder struct {
 	enc    *opus.Encoder
-	buf    []float32 // accumulates samples until we have a full frame
+	buf    []float32
 	out    bytes.Buffer
+	frames [][]byte // individual encoded frames for Ogg muxing
 	frame  []byte
 	mu     sync.Mutex
 }
@@ -58,8 +59,13 @@ func (s *StreamEncoder) Write(samples []float32) error {
 		if err != nil {
 			return fmt.Errorf("encode frame: %w", err)
 		}
+		// Save for wire format
 		binary.Write(&s.out, binary.LittleEndian, uint16(n))
 		s.out.Write(s.frame[:n])
+		// Save individual frame for Ogg muxing
+		frameCopy := make([]byte, n)
+		copy(frameCopy, s.frame[:n])
+		s.frames = append(s.frames, frameCopy)
 	}
 	return nil
 }
@@ -82,14 +88,24 @@ func (s *StreamEncoder) Flush() error {
 	}
 	binary.Write(&s.out, binary.LittleEndian, uint16(n))
 	s.out.Write(s.frame[:n])
+	frameCopy := make([]byte, n)
+	copy(frameCopy, s.frame[:n])
+	s.frames = append(s.frames, frameCopy)
 	return nil
 }
 
-// Bytes returns the encoded Opus data.
+// Bytes returns the encoded Opus data in wire format (for server transfer).
 func (s *StreamEncoder) Bytes() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.out.Bytes()
+}
+
+// OggBytes returns the encoded audio as a standard Ogg Opus file (playable by media players).
+func (s *StreamEncoder) OggBytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return OggOpus(s.frames, SampleRate, channels)
 }
 
 // EncodeOpus encodes float32 PCM samples to Opus in one shot.

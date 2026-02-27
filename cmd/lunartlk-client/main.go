@@ -77,12 +77,6 @@ func main() {
 	buf := make([]float32, chunkSize)
 	var recorded []float32
 
-	// Real-time Opus encoder
-	opusEnc, err := audio.NewStreamEncoder(32000)
-	if err != nil {
-		log.Fatalf("Opus encoder init failed: %v", err)
-	}
-
 	stream, err := portaudio.OpenDefaultStream(1, 0, float64(sampleRate), chunkSize, buf)
 	if err != nil {
 		log.Fatalf("Failed to open mic: %v", err)
@@ -119,7 +113,6 @@ func main() {
 		chunk := make([]float32, chunkSize)
 		copy(chunk, buf)
 		recorded = append(recorded, chunk...)
-		opusEnc.Write(chunk)
 
 		if time.Since(lastPrint) >= 100*time.Millisecond {
 			elapsed := time.Since(start).Truncate(100 * time.Millisecond)
@@ -136,8 +129,6 @@ done:
 	// Pad 1s of silence so the model doesn't clip the last word
 	pad := make([]float32, sampleRate)
 	recorded = append(recorded, pad...)
-	opusEnc.Write(pad)
-	opusEnc.Flush()
 
 	elapsed := time.Since(start).Truncate(time.Millisecond)
 	fmt.Fprintf(os.Stderr, "\r⏹  Recorded %s (%d samples)\n", elapsed, len(recorded))
@@ -146,6 +137,17 @@ done:
 		fmt.Fprintln(os.Stderr, "Nothing recorded.")
 		return
 	}
+
+	// Normalize audio volume
+	normalizeAudio(recorded)
+
+	// Encode normalized audio as Opus
+	opusEnc, err := audio.NewStreamEncoder(64000)
+	if err != nil {
+		log.Fatalf("Opus encoder init failed: %v", err)
+	}
+	opusEnc.Write(recorded)
+	opusEnc.Flush()
 
 	// Save backup WAV before sending
 	wavData := wav.Encode(recorded, sampleRate)
@@ -163,6 +165,7 @@ done:
 	}
 
 	opusData := opusEnc.Bytes()
+	oggData := opusEnc.OggBytes()
 	fmt.Fprintf(os.Stderr, "🔊 Encoded: %dKB WAV → %dKB Opus\n", len(wavData)/1024, len(opusData)/1024)
 
 	serverURL := strings.TrimRight(*server, "/")
@@ -192,7 +195,7 @@ done:
 	// Save transcript and audio
 	if !*noSave {
 		saveTranscript(resp)
-		saveAudio(opusData)
+		saveAudio(oggData)
 	}
 
 	if resp.Text == "" {
@@ -305,4 +308,23 @@ func saveAudio(opusData []byte) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "🔊 Audio saved to %s\n", path)
+}
+
+func normalizeAudio(samples []float32) {
+	var peak float32
+	for _, s := range samples {
+		if s > peak {
+			peak = s
+		} else if -s > peak {
+			peak = -s
+		}
+	}
+	if peak < 0.001 {
+		return
+	}
+	gain := float32(0.9) / peak
+	fmt.Fprintf(os.Stderr, "🔈 Peak: %.3f, gain: %.1fx\n", peak, gain)
+	for i := range samples {
+		samples[i] *= gain
+	}
 }
