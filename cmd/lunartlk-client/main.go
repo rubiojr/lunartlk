@@ -180,9 +180,10 @@ done:
 	// Success — remove backup
 	os.Remove(backupPath)
 
-	// Save transcript
+	// Save transcript and audio
 	if !*noSave {
 		saveTranscript(resp)
+		saveAudio(opusData)
 	}
 
 	if resp.Text == "" {
@@ -249,7 +250,7 @@ func copyToClipboard(text string) {
 	fmt.Fprintln(os.Stderr, "📋 Copied to clipboard")
 }
 
-func transcriptDir() string {
+func dataDir() string {
 	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
 		return filepath.Join(d, "lunartlk")
 	}
@@ -258,7 +259,7 @@ func transcriptDir() string {
 }
 
 func saveTranscript(resp *TranscriptResponse) {
-	dir := transcriptDir()
+	dir := filepath.Join(dataDir(), "transcripts")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Failed to create transcript dir: %v\n", err)
 		return
@@ -278,4 +279,21 @@ func saveTranscript(resp *TranscriptResponse) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "📝 Transcript saved to %s\n", path)
+}
+
+func saveAudio(opusData []byte) {
+	dir := filepath.Join(dataDir(), "audio")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Failed to create audio dir: %v\n", err)
+		return
+	}
+
+	filename := time.Now().Format("2006-01-02T15-04-05") + ".opus"
+	path := filepath.Join(dir, filename)
+
+	if err := os.WriteFile(path, opusData, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Failed to save audio: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "🔊 Audio saved to %s\n", path)
 }

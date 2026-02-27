@@ -69,17 +69,24 @@ Ctrl+C
                                        │
                                        ▼
                                  [save JSON transcript]
-                                 ~/.local/share/lunartlk/
+                                 ~/.local/share/lunartlk/transcripts/
+                                       │
+                                       ▼
+                                 [save Opus audio]
+                                 ~/.local/share/lunartlk/audio/
 ```
 
 ## Storage
 
 | Path | Description |
 |---|---|
-| `~/.local/share/lunartlk/` | Saved transcripts (JSON, one per recording) |
+| `~/.local/share/lunartlk/transcripts/` | Saved transcripts as timestamped JSON files |
+| `~/.local/share/lunartlk/audio/` | Saved Opus-encoded audio files |
 | `/tmp/lunartlk-<timestamp>.wav` | Backup WAV of last recording. Deleted on successful transcription. |
 
-The transcript directory respects `XDG_DATA_HOME`. Each transcript is saved as `<timestamp>.json` (e.g., `2026-02-27T15-04-05.json`) containing the full server response.
+The data directory respects `XDG_DATA_HOME`. Files use the format `<YYYY-MM-DDThh-mm-ss>.json` and `<YYYY-MM-DDThh-mm-ss>.opus`.
+
+Use `-no-save` to disable saving transcripts and audio.
 
 The backup WAV uses the pattern `/tmp/lunartlk-<unix-timestamp>.wav`. If the server fails, the error message includes the full path:
 
