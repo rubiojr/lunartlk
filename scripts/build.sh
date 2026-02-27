@@ -73,7 +73,7 @@ preflight() {
     local ok=true
 
     # Required commands
-    for cmd in gcc g++ cmake git go curl zstd pkg-config; do
+    for cmd in gcc g++ cmake git git-lfs go curl zstd pkg-config; do
         if command -v "$cmd" &>/dev/null; then
             printf "  %-20s %s\n" "$cmd" "$(command -v "$cmd")"
         else
@@ -124,11 +124,11 @@ preflight() {
         echo ""
         if is_debian; then
             echo "Install missing dependencies (Debian/Ubuntu/RPi):"
-            echo "  sudo apt install -y build-essential cmake git portaudio19-dev \\"
+            echo "  sudo apt install -y build-essential cmake git git-lfs portaudio19-dev \\"
             echo "    libopus-dev libopusfile-dev zstd"
         else
             echo "Install missing dependencies (Fedora):"
-            echo "  sudo dnf install -y gcc gcc-c++ cmake git portaudio-devel \\"
+            echo "  sudo dnf install -y gcc gcc-c++ cmake git git-lfs portaudio-devel \\"
             echo "    pipewire-jack-audio-connection-kit-devel opus-devel opusfile-devel zstd"
         fi
         echo ""
@@ -142,18 +142,26 @@ preflight() {
 # ─── Clone/update Moonshine ─────────────────────────────────────────────────
 
 setup_moonshine() {
-    if [ -d "$VENDOR_DIR/core" ]; then
-        info "Moonshine source already present"
-        return
+    if [ -d "$VENDOR_DIR/src/core" ]; then
+        # Check if LFS files are resolved
+        if head -1 "$VENDOR_DIR/src/core/speaker-embedding-model-data.cpp" 2>/dev/null | grep -q '^version https://git-lfs'; then
+            warn "LFS files not resolved, re-cloning..."
+            rm -rf "$VENDOR_DIR/src"
+        else
+            info "Moonshine source already present"
+        fi
     fi
 
-    info "Cloning Moonshine..."
-    mkdir -p "$VENDOR_DIR"
-    git clone --depth 1 https://github.com/moonshine-ai/moonshine.git "$VENDOR_DIR/src"
+    if [ ! -d "$VENDOR_DIR/src/core" ]; then
+        info "Cloning Moonshine (with LFS)..."
+        mkdir -p "$VENDOR_DIR"
+        git clone --depth 1 https://github.com/moonshine-ai/moonshine.git "$VENDOR_DIR/src"
+        info "Moonshine source ready"
+    fi
 
-    ln -sf "$VENDOR_DIR/src/core" "$VENDOR_DIR/core"
-
-    info "Moonshine source ready"
+    # Ensure core symlink points to the cloned source
+    rm -rf "$VENDOR_DIR/core" 2>/dev/null || true
+    ln -snf "$VENDOR_DIR/src/core" "$VENDOR_DIR/core"
 }
 
 # ─── Build libmoonshine.so ───────────────────────────────────────────────────
@@ -163,7 +171,40 @@ build_moonshine() {
     local host_arch
     host_arch=$(uname -m)
 
-    # Check if existing .so matches our architecture
+    # Copy ONNX Runtime to vendor first (needed for build)
+    local ort_src="$VENDOR_DIR/core/third-party/onnxruntime/lib/linux/$host_arch"
+    local ort_dst="$VENDOR_DIR/onnxruntime"
+
+    # Detect ORT version from the source lib
+    local ort_src_ver=""
+    if [ -d "$ort_src" ]; then
+        ort_src_ver=$(strings "$ort_src"/libonnxruntime.so* 2>/dev/null | grep -oP '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+    fi
+
+    # Check if existing ORT matches source version
+    if [ -f "$ort_dst/libonnxruntime.so.1" ]; then
+        local ort_dst_ver
+        ort_dst_ver=$(readelf -V "$ort_dst/libonnxruntime.so.1" 2>/dev/null | grep -oP 'VERS_\K[0-9.]+' | head -1 || true)
+        if [ -n "$ort_src_ver" ] && [ -n "$ort_dst_ver" ] && [ "$ort_dst_ver" != "$ort_src_ver" ]; then
+            warn "ORT version mismatch: installed=$ort_dst_ver source=$ort_src_ver, updating..."
+            rm -f "$ort_dst/libonnxruntime.so.1"
+        fi
+    fi
+
+    if [ ! -f "$ort_dst/libonnxruntime.so.1" ]; then
+        if [ ! -d "$ort_src" ]; then
+            die "No ONNX Runtime found for $host_arch at $ort_src"
+        fi
+        mkdir -p "$ort_dst"
+        cp "$ort_src"/libonnxruntime.so* "$ort_dst/"
+        # Ensure .so.1 symlink exists
+        if [ ! -f "$ort_dst/libonnxruntime.so.1" ]; then
+            ln -sf "$(ls "$ort_dst"/libonnxruntime.so.* | head -1)" "$ort_dst/libonnxruntime.so.1"
+        fi
+        info "ONNX Runtime copied for $host_arch ($ort_src_ver)"
+    fi
+
+    # Check if existing .so matches architecture and ORT version
     local need_build=false
     if [ -f "$build_dir/libmoonshine.so" ]; then
         local so_arch
@@ -173,8 +214,20 @@ build_moonshine() {
             aarch64) [[ "$so_arch" == "aarch64" || "$so_arch" == "ARM" ]] || need_build=true ;;
             *)       need_build=true ;;
         esac
+
+        # Check if libmoonshine links against the same ORT version we have
+        if [ "$need_build" = false ]; then
+            local linked_ort
+            linked_ort=$(readelf -V "$build_dir/libmoonshine.so" 2>/dev/null | grep -oP 'VERS_\K[0-9.]+' | head -1 || true)
+            local current_ort
+            current_ort=$(readelf -V "$ort_dst/libonnxruntime.so.1" 2>/dev/null | grep -oP 'VERS_\K[0-9.]+' | head -1 || true)
+            if [ -n "$linked_ort" ] && [ -n "$current_ort" ] && [ "$linked_ort" != "$current_ort" ]; then
+                warn "libmoonshine.so linked against ORT $linked_ort but have ORT $current_ort, rebuilding..."
+                need_build=true
+            fi
+        fi
+
         if [ "$need_build" = true ]; then
-            warn "Existing libmoonshine.so is for $so_arch, rebuilding for $host_arch..."
             rm -rf "$build_dir"
         else
             info "libmoonshine.so already built for $host_arch"
@@ -188,21 +241,12 @@ build_moonshine() {
         mkdir -p "$build_dir"
         cmake -B "$build_dir" -S "$VENDOR_DIR/core" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DMOONSHINE_BUILD_SHARED=ON 2>&1 | tail -5
-        cmake --build "$build_dir" -j"$(nproc)" 2>&1 | tail -5
-        info "libmoonshine.so built"
-    fi
-
-    # Copy ONNX Runtime to vendor
-    local ort_src="$VENDOR_DIR/core/third-party/onnxruntime/lib/linux/$host_arch"
-    local ort_dst="$VENDOR_DIR/onnxruntime"
-    if [ ! -f "$ort_dst/libonnxruntime.so.1" ]; then
-        if [ ! -d "$ort_src" ]; then
-            die "No ONNX Runtime found for $host_arch at $ort_src"
+            -DMOONSHINE_BUILD_SHARED=ON 2>&1
+        cmake --build "$build_dir" -j"$(nproc)" 2>&1
+        if [ ! -f "$build_dir/libmoonshine.so" ]; then
+            die "Failed to build libmoonshine.so"
         fi
-        mkdir -p "$ort_dst"
-        cp "$ort_src"/libonnxruntime.so* "$ort_dst/"
-        info "ONNX Runtime copied for $host_arch"
+        info "libmoonshine.so built"
     fi
 }
 
@@ -270,12 +314,6 @@ build_binaries() {
     cp "$VENDOR_DIR/core/build/libmoonshine.so" "$staging/libs/"
     cp "$VENDOR_DIR/onnxruntime"/libonnxruntime.so* "$staging/libs/"
 
-    mkdir -p "$staging/models"
-    for model in "${MODELS[@]}"; do
-        mkdir -p "$staging/models/$model"
-        cp "$PROJECT_DIR/models/$model"/* "$staging/models/$model/"
-    done
-
     local payload
     payload=$(mktemp)
     tar -cf - -C "$staging" . | zstd -3 -T0 > "$payload"
@@ -288,7 +326,6 @@ MARKER="$EXTRACT_DIR/.extracted"
 SELF_HASH=$(md5sum "$0" 2>/dev/null | cut -d' ' -f1)
 if [ ! -f "$MARKER" ] || [ "$(cat "$MARKER")" != "$SELF_HASH" ]; then
     echo "Extracting lunartlk server to $EXTRACT_DIR..." >&2
-    rm -rf "$EXTRACT_DIR"
     mkdir -p "$EXTRACT_DIR"
     ARCHIVE_START=$(awk '/^__ARCHIVE_BELOW__$/{print NR + 1; exit 0; }' "$0")
     tail -n +"$ARCHIVE_START" "$0" | zstd -d | tar xf - -C "$EXTRACT_DIR"
@@ -307,7 +344,7 @@ WRAPPER
 
     local size
     size=$(du -h "$PROJECT_DIR/bin/lunartlk-server" | cut -f1)
-    info "Server bundle: bin/lunartlk-server ($size)"
+    info "Server bundle: bin/lunartlk-server ($size, models download on first run)"
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -318,13 +355,10 @@ main() {
     echo -e "${BOLD}║         lunartlk build system        ║${NC}"
     echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
     echo ""
-    echo "  Models: ${MODELS[*]}"
-    echo ""
 
     preflight
     setup_moonshine
     build_moonshine
-    download_models
     build_binaries
 
     echo ""
@@ -332,6 +366,8 @@ main() {
     echo ""
     echo "  Server: bin/lunartlk-server [-addr :9765] [-lang es|en]"
     echo "  Client: bin/lunartlk-client [-server http://localhost:9765]"
+    echo ""
+    echo "  Models download automatically on first server start."
     echo ""
 }
 

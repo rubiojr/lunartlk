@@ -20,11 +20,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
 	"lunartlk/internal/audio"
 	"lunartlk/internal/doctor"
+	mdl "lunartlk/internal/models"
+	"lunartlk/internal/parakeet"
 	"lunartlk/internal/wav"
 )
 
@@ -42,40 +45,102 @@ type TranscriptResponse struct {
 	ProcessingMs  int64            `json:"processing_ms"`
 	Model         string           `json:"model"`
 	Lang          string           `json:"lang"`
-	Arch          int              `json:"arch"`
+	Engine        string           `json:"engine"`
 }
 
-type langConfig struct {
-	modelDir  string
-	modelArch int
+// transcriber abstracts over moonshine and parakeet engines.
+type transcriber interface {
+	Transcribe(samples []float32, sampleRate int32) (*TranscriptResponse, error)
+}
+
+// --- Moonshine engine ---
+
+type moonshineTranscriber struct {
+	handle    C.int32_t
 	modelName string
 }
 
+func (m *moonshineTranscriber) Transcribe(samples []float32, sampleRate int32) (*TranscriptResponse, error) {
+	var transcript *C.struct_transcript_t
+	rc := C.moonshine_transcribe_without_streaming(
+		m.handle,
+		(*C.float)(unsafe.Pointer(&samples[0])),
+		C.uint64_t(len(samples)),
+		C.int32_t(sampleRate),
+		0,
+		&transcript,
+	)
+	if rc != 0 {
+		return nil, fmt.Errorf("moonshine: %s", C.GoString(C.moonshine_error_to_string(rc)))
+	}
+
+	resp := &TranscriptResponse{
+		Model:  m.modelName,
+		Engine: "moonshine",
+	}
+	var texts []string
+	if transcript != nil && transcript.line_count > 0 {
+		lines := unsafe.Slice(transcript.lines, transcript.line_count)
+		for _, line := range lines {
+			text := C.GoString(line.text)
+			resp.Lines = append(resp.Lines, TranscriptLine{
+				Text:      text,
+				StartTime: math.Round(float64(line.start_time)*1000) / 1000,
+				Duration:  math.Round(float64(line.duration)*1000) / 1000,
+				Speaker:   uint32(line.speaker_index),
+			})
+			if text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	resp.Text = strings.Join(texts, " ")
+	return resp, nil
+}
+
+// --- Parakeet engine ---
+
+type parakeetTranscriber struct {
+	model *parakeet.Model
+	mu    sync.Mutex // ONNX Runtime sessions aren't thread-safe
+}
+
+func (p *parakeetTranscriber) Transcribe(samples []float32, sampleRate int32) (*TranscriptResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	text, err := p.model.Transcribe(samples)
+	if err != nil {
+		return nil, fmt.Errorf("parakeet: %w", err)
+	}
+	return &TranscriptResponse{
+		Text:   text,
+		Model:  "parakeet-tdt-0.6b-v3",
+		Engine: "parakeet",
+	}, nil
+}
+
+// --- Server ---
+
 type serverInfo struct {
-	langs       map[string]*loadedLang
+	moonshine   map[string]transcriber // keyed by lang
+	parakeet    transcriber            // single multilingual model
 	defaultLang string
+	defaultEng  string
 	debug       bool
 	token       string
 }
 
-type loadedLang struct {
-	handle    C.int32_t
-	modelName string
-	modelArch int
-}
-
-var defaultLangs = map[string]langConfig{
-	"es": {modelDir: "models/base-es", modelArch: int(C.MOONSHINE_MODEL_ARCH_BASE), modelName: "base-es"},
-	"en": {modelDir: "models/base-en", modelArch: int(C.MOONSHINE_MODEL_ARCH_BASE), modelName: "base-en"},
-}
 
 func main() {
 	doctorFlag := flag.Bool("doctor", false, "run preflight checks and exit")
 	debugFlag := flag.Bool("debug", false, "log transcript text in request logs")
-	token := flag.String("token", "", "require Bearer token for authentication")
+	tokenFlag := flag.String("token", "", "require Bearer token for authentication")
 	addr := flag.String("addr", ":9765", "listen address")
 	lang := flag.String("lang", "es", "default language (en, es)")
-	modelsRoot := flag.String("models", "", "models root directory (default: auto-detect from _MOONSHINE_DIR)")
+	engine := flag.String("engine", "moonshine", "default engine (moonshine, parakeet)")
+	cacheDir := flag.String("cache", "", "cache directory for models (default: ~/.cache/lunartlk)")
+	ortLib := flag.String("ort", "", "ONNX Runtime library path (default: auto-detect)")
 	flag.Parse()
 
 	if *doctorFlag {
@@ -87,61 +152,105 @@ func main() {
 		os.Exit(1)
 	}
 
-	root := *modelsRoot
-	if root == "" {
+	cache := *cacheDir
+	if cache == "" {
 		if d := os.Getenv("_MOONSHINE_DIR"); d != "" {
-			root = d
+			cache = d
+		} else if d := os.Getenv("LUNARTLK_CACHE_DIR"); d != "" {
+			cache = d
+		} else if d := os.Getenv("XDG_CACHE_HOME"); d != "" {
+			cache = filepath.Join(d, "lunartlk")
 		} else {
-			log.Fatal("No models root specified. Use -models <path> or set _MOONSHINE_DIR")
+			home, _ := os.UserHomeDir()
+			cache = filepath.Join(home, ".cache", "lunartlk")
 		}
 	}
 
 	srv := serverInfo{
-		langs:       make(map[string]*loadedLang),
+		moonshine:   make(map[string]transcriber),
 		defaultLang: *lang,
+		defaultEng:  *engine,
 		debug:       *debugFlag,
-		token:       *token,
+		token:       *tokenFlag,
 	}
 
-	for langCode, cfg := range defaultLangs {
-		modelPath := filepath.Join(root, cfg.modelDir)
-		if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-			log.Printf("Model for '%s' not found at %s, skipping", langCode, modelPath)
+	// Load Moonshine models (auto-download if missing)
+	moonshineModelMap := map[string]string{
+		"es": "base-es",
+		"en": "base-en",
+	}
+	for langCode, modelName := range moonshineModelMap {
+		info := mdl.MoonshineModels[modelName]
+		modelPath, err := mdl.EnsureModel(cache, info)
+		if err != nil {
+			log.Printf("[moonshine] Failed to get '%s': %v", modelName, err)
 			continue
 		}
 
 		cPath := C.CString(modelPath)
 		handle := C.moonshine_load_transcriber_from_files(
-			cPath,
-			C.uint32_t(cfg.modelArch),
-			nil, 0,
-			C.MOONSHINE_HEADER_VERSION,
+			cPath, C.uint32_t(C.MOONSHINE_MODEL_ARCH_BASE), nil, 0, C.MOONSHINE_HEADER_VERSION,
 		)
 		C.free(unsafe.Pointer(cPath))
 
 		if handle < 0 {
-			log.Printf("Failed to load '%s' model: %s", langCode, C.GoString(C.moonshine_error_to_string(handle)))
+			log.Printf("[moonshine] Failed to load '%s': %s", modelName, C.GoString(C.moonshine_error_to_string(handle)))
 			continue
 		}
 
-		srv.langs[langCode] = &loadedLang{
-			handle:    handle,
-			modelName: cfg.modelName,
-			modelArch: cfg.modelArch,
-		}
-		log.Printf("Loaded model: %s (%s)", cfg.modelName, langCode)
+		srv.moonshine[langCode] = &moonshineTranscriber{handle: handle, modelName: modelName}
+		log.Printf("[moonshine] Loaded: %s (%s)", modelName, langCode)
 	}
 
-	if len(srv.langs) == 0 {
+	// Load Parakeet model (auto-download if missing)
+	ortPath := *ortLib
+	if ortPath == "" {
+		for _, p := range []string{
+			filepath.Join(cache, "libs", "libonnxruntime.so.1"),
+			"third-party/moonshine/onnxruntime/libonnxruntime.so.1",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				ortPath = p
+				break
+			}
+		}
+	}
+
+	if ortPath != "" {
+		// Download parakeet model files
+		pkDir, err := mdl.EnsureModel(cache, mdl.ParakeetModel)
+		if err != nil {
+			log.Printf("[parakeet] Failed to get model: %v", err)
+		} else {
+			// Also need the preprocessor
+			mdl.EnsureModel(cache, mdl.ParakeetPreprocessor)
+
+			pkModel, err := parakeet.LoadModel(pkDir, ortPath)
+			if err != nil {
+				log.Printf("[parakeet] Failed to load: %v", err)
+			} else {
+				srv.parakeet = &parakeetTranscriber{model: pkModel}
+				log.Printf("[parakeet] Loaded: parakeet-tdt-0.6b-v3 (25 languages)")
+			}
+		}
+	} else {
+		log.Printf("[parakeet] No ONNX Runtime found, skipping")
+	}
+
+	if len(srv.moonshine) == 0 && srv.parakeet == nil {
 		log.Fatal("No models loaded")
 	}
-	if srv.langs[srv.defaultLang] == nil {
-		// Fall back to first available
-		for k := range srv.langs {
+
+	// Fix default lang/engine if not available
+	if srv.defaultEng == "moonshine" && srv.moonshine[srv.defaultLang] == nil {
+		for k := range srv.moonshine {
 			srv.defaultLang = k
 			break
 		}
-		log.Printf("Requested default '%s' not available, using '%s'", *lang, srv.defaultLang)
+	}
+	if srv.defaultEng == "parakeet" && srv.parakeet == nil {
+		srv.defaultEng = "moonshine"
+		log.Printf("Parakeet not available, falling back to moonshine")
 	}
 
 	http.HandleFunc("/transcribe", func(w http.ResponseWriter, r *http.Request) {
@@ -157,12 +266,19 @@ func main() {
 		fmt.Fprintln(w, "ok")
 	})
 
-	var loaded []string
-	for k := range srv.langs {
-		loaded = append(loaded, k)
+	var engines []string
+	if len(srv.moonshine) > 0 {
+		var langs []string
+		for k := range srv.moonshine {
+			langs = append(langs, k)
+		}
+		engines = append(engines, fmt.Sprintf("moonshine(%s)", strings.Join(langs, ",")))
 	}
-	log.Printf("lunartlk server listening on %s (languages: %s, default: %s)",
-		*addr, strings.Join(loaded, ", "), srv.defaultLang)
+	if srv.parakeet != nil {
+		engines = append(engines, "parakeet(multilingual)")
+	}
+	log.Printf("lunartlk server listening on %s [engines: %s, default: %s/%s]",
+		*addr, strings.Join(engines, " "), srv.defaultEng, srv.defaultLang)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
@@ -177,22 +293,41 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, 50<<20)
 
-	// Language selection: ?lang=en or ?lang=es, defaults to server default
 	langCode := r.URL.Query().Get("lang")
 	if langCode == "" {
 		langCode = srv.defaultLang
 	}
-	ll := srv.langs[langCode]
-	if ll == nil {
-		var avail []string
-		for k := range srv.langs {
-			avail = append(avail, k)
+	engineName := r.URL.Query().Get("engine")
+	if engineName == "" {
+		engineName = srv.defaultEng
+	}
+
+	// Select transcriber
+	var t transcriber
+	switch engineName {
+	case "parakeet":
+		if srv.parakeet == nil {
+			http.Error(w, "parakeet engine not loaded", http.StatusBadRequest)
+			return
 		}
-		http.Error(w, fmt.Sprintf("unknown language '%s', available: %s", langCode, strings.Join(avail, ", ")),
-			http.StatusBadRequest)
+		t = srv.parakeet
+	case "moonshine":
+		t = srv.moonshine[langCode]
+		if t == nil {
+			var avail []string
+			for k := range srv.moonshine {
+				avail = append(avail, k)
+			}
+			http.Error(w, fmt.Sprintf("moonshine: unknown lang '%s', available: %s", langCode, strings.Join(avail, ", ")),
+				http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, fmt.Sprintf("unknown engine '%s', use 'moonshine' or 'parakeet'", engineName), http.StatusBadRequest)
 		return
 	}
 
+	// Decode audio
 	file, header, err := r.FormFile("audio")
 	if err != nil {
 		http.Error(w, "missing 'audio' form file: "+err.Error(), http.StatusBadRequest)
@@ -207,7 +342,6 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
 	}
 
 	name := strings.ToLower(header.Filename)
-
 	var samples []float32
 	var sampleRate int32
 
@@ -227,50 +361,18 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
 
 	audioDuration := float64(len(samples)) / float64(sampleRate)
 
+	// Transcribe
 	startTime := time.Now()
-
-	var transcript *C.struct_transcript_t
-	rc := C.moonshine_transcribe_without_streaming(
-		ll.handle,
-		(*C.float)(unsafe.Pointer(&samples[0])),
-		C.uint64_t(len(samples)),
-		C.int32_t(sampleRate),
-		0,
-		&transcript,
-	)
-	if rc != 0 {
-		http.Error(w, "transcription failed: "+C.GoString(C.moonshine_error_to_string(rc)),
-			http.StatusInternalServerError)
+	resp, err := t.Transcribe(samples, sampleRate)
+	if err != nil {
+		http.Error(w, "transcription failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	processingMs := time.Since(startTime).Milliseconds()
 
-	resp := TranscriptResponse{
-		AudioDuration: math.Round(audioDuration*1000) / 1000,
-		ProcessingMs:  processingMs,
-		Model:         ll.modelName,
-		Lang:          langCode,
-		Arch:          ll.modelArch,
-	}
-
-	var texts []string
-	if transcript != nil && transcript.line_count > 0 {
-		lines := unsafe.Slice(transcript.lines, transcript.line_count)
-		for _, line := range lines {
-			text := C.GoString(line.text)
-			resp.Lines = append(resp.Lines, TranscriptLine{
-				Text:      text,
-				StartTime: math.Round(float64(line.start_time)*1000) / 1000,
-				Duration:  math.Round(float64(line.duration)*1000) / 1000,
-				Speaker:   uint32(line.speaker_index),
-			})
-			if text != "" {
-				texts = append(texts, text)
-			}
-		}
-	}
-	resp.Text = strings.Join(texts, " ")
+	resp.AudioDuration = math.Round(audioDuration*1000) / 1000
+	resp.ProcessingMs = processingMs
+	resp.Lang = langCode
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -280,10 +382,10 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
 		if len(logText) > 80 {
 			logText = logText[:80] + "..."
 		}
-		log.Printf("%s lang=%s fmt=%s audio=%.1fs proc=%dms text=%q",
-			r.RemoteAddr, langCode, filepath.Ext(name), audioDuration, processingMs, logText)
+		log.Printf("%s engine=%s lang=%s fmt=%s audio=%.1fs proc=%dms text=%q",
+			r.RemoteAddr, engineName, langCode, filepath.Ext(name), audioDuration, processingMs, logText)
 	} else {
-		log.Printf("%s lang=%s fmt=%s audio=%.1fs proc=%dms",
-			r.RemoteAddr, langCode, filepath.Ext(name), audioDuration, processingMs)
+		log.Printf("%s engine=%s lang=%s fmt=%s audio=%.1fs proc=%dms",
+			r.RemoteAddr, engineName, langCode, filepath.Ext(name), audioDuration, processingMs)
 	}
 }

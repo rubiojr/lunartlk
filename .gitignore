@@ -1,4 +1,4 @@
-bin/
-third-party/
-models/
+/bin/
+/third-party/
+/models/
 *.bin

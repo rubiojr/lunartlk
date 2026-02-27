@@ -45,6 +45,7 @@ type TranscriptResponse struct {
 	ProcessingMs  int64            `json:"processing_ms"`
 	Model         string           `json:"model"`
 	Lang          string           `json:"lang"`
+	Engine        string           `json:"engine"`
 	Arch          int              `json:"arch"`
 }
 
@@ -53,6 +54,7 @@ func main() {
 	server := flag.String("server", "http://localhost:9765", "transcription server URL")
 	token := flag.String("token", "", "Bearer token for server authentication")
 	lang := flag.String("lang", "", "language for transcription (en, es)")
+	engineFlag := flag.String("engine", "", "transcription engine (moonshine, parakeet)")
 	clipboard := flag.Bool("clipboard", false, "copy result to clipboard via wl-copy")
 	noSave := flag.Bool("no-save", false, "don't save transcript to disk")
 	saveWav := flag.String("save-wav", "", "save recorded audio to this WAV file for debugging")
@@ -165,8 +167,15 @@ done:
 
 	serverURL := strings.TrimRight(*server, "/")
 	transcribeURL := serverURL + "/transcribe"
+	var params []string
 	if *lang != "" {
-		transcribeURL += "?lang=" + *lang
+		params = append(params, "lang="+*lang)
+	}
+	if *engineFlag != "" {
+		params = append(params, "engine="+*engineFlag)
+	}
+	if len(params) > 0 {
+		transcribeURL += "?" + strings.Join(params, "&")
 	}
 
 	fmt.Fprintln(os.Stderr, "📡 Sending to server...")
@@ -191,8 +200,8 @@ done:
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "\n[%s, lang=%s, %.1fs audio, %dms processing]\n",
-		resp.Model, resp.Lang, resp.AudioDuration, resp.ProcessingMs)
+	fmt.Fprintf(os.Stderr, "\n[%s/%s, lang=%s, %.1fs audio, %dms processing]\n",
+		resp.Engine, resp.Model, resp.Lang, resp.AudioDuration, resp.ProcessingMs)
 	fmt.Println(resp.Text)
 
 	if *clipboard {
