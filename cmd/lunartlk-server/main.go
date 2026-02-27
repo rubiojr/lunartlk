@@ -120,11 +120,79 @@ func (p *parakeetTranscriber) Transcribe(samples []float32, sampleRate int32) (*
 	}, nil
 }
 
+// --- Lazy Moonshine loader ---
+
+type lazyMoonshine struct {
+	mu        sync.Mutex
+	loaded    *moonshineTranscriber
+	modelName string
+	cacheDir  string
+}
+
+func (l *lazyMoonshine) Transcribe(samples []float32, sampleRate int32) (*TranscriptResponse, error) {
+	l.mu.Lock()
+	if l.loaded == nil {
+		log.Printf("[moonshine] Loading %s on first request...", l.modelName)
+		info := mdl.MoonshineModels[l.modelName]
+		modelPath, err := mdl.EnsureModel(l.cacheDir, info)
+		if err != nil {
+			l.mu.Unlock()
+			return nil, fmt.Errorf("download %s: %w", l.modelName, err)
+		}
+		cPath := C.CString(modelPath)
+		handle := C.moonshine_load_transcriber_from_files(
+			cPath, C.uint32_t(C.MOONSHINE_MODEL_ARCH_BASE), nil, 0, C.MOONSHINE_HEADER_VERSION,
+		)
+		C.free(unsafe.Pointer(cPath))
+		if handle < 0 {
+			l.mu.Unlock()
+			return nil, fmt.Errorf("load %s: %s", l.modelName, C.GoString(C.moonshine_error_to_string(handle)))
+		}
+		l.loaded = &moonshineTranscriber{handle: handle, modelName: l.modelName}
+		log.Printf("[moonshine] Loaded: %s", l.modelName)
+	}
+	t := l.loaded
+	l.mu.Unlock()
+	return t.Transcribe(samples, sampleRate)
+}
+
+// --- Lazy Parakeet loader ---
+
+type lazyParakeet struct {
+	mu       sync.Mutex
+	loaded   *parakeetTranscriber
+	cacheDir string
+	ortPath  string
+}
+
+func (l *lazyParakeet) Transcribe(samples []float32, sampleRate int32) (*TranscriptResponse, error) {
+	l.mu.Lock()
+	if l.loaded == nil {
+		log.Printf("[parakeet] Loading on first request...")
+		pkDir, err := mdl.EnsureModel(l.cacheDir, mdl.ParakeetModel)
+		if err != nil {
+			l.mu.Unlock()
+			return nil, fmt.Errorf("download parakeet: %w", err)
+		}
+		mdl.EnsureModel(l.cacheDir, mdl.ParakeetPreprocessor)
+		pkModel, err := parakeet.LoadModel(pkDir, l.ortPath)
+		if err != nil {
+			l.mu.Unlock()
+			return nil, fmt.Errorf("load parakeet: %w", err)
+		}
+		l.loaded = &parakeetTranscriber{model: pkModel}
+		log.Printf("[parakeet] Loaded: parakeet-tdt-0.6b-v3")
+	}
+	t := l.loaded
+	l.mu.Unlock()
+	return t.Transcribe(samples, sampleRate)
+}
+
 // --- Server ---
 
 type serverInfo struct {
-	moonshine   map[string]transcriber // keyed by lang
-	parakeet    transcriber            // single multilingual model
+	moonshine   map[string]transcriber
+	parakeet    transcriber
 	defaultLang string
 	defaultEng  string
 	debug       bool
@@ -174,35 +242,13 @@ func main() {
 		token:       *tokenFlag,
 	}
 
-	// Load Moonshine models (auto-download if missing)
-	moonshineModelMap := map[string]string{
-		"es": "base-es",
-		"en": "base-en",
-	}
-	for langCode, modelName := range moonshineModelMap {
-		info := mdl.MoonshineModels[modelName]
-		modelPath, err := mdl.EnsureModel(cache, info)
-		if err != nil {
-			log.Printf("[moonshine] Failed to get '%s': %v", modelName, err)
-			continue
-		}
-
-		cPath := C.CString(modelPath)
-		handle := C.moonshine_load_transcriber_from_files(
-			cPath, C.uint32_t(C.MOONSHINE_MODEL_ARCH_BASE), nil, 0, C.MOONSHINE_HEADER_VERSION,
-		)
-		C.free(unsafe.Pointer(cPath))
-
-		if handle < 0 {
-			log.Printf("[moonshine] Failed to load '%s': %s", modelName, C.GoString(C.moonshine_error_to_string(handle)))
-			continue
-		}
-
-		srv.moonshine[langCode] = &moonshineTranscriber{handle: handle, modelName: modelName}
-		log.Printf("[moonshine] Loaded: %s (%s)", modelName, langCode)
+	// Register lazy Moonshine models
+	for langCode, modelName := range map[string]string{"es": "base-es", "en": "base-en"} {
+		srv.moonshine[langCode] = &lazyMoonshine{modelName: modelName, cacheDir: cache}
+		log.Printf("[moonshine] Registered: %s (%s, lazy)", modelName, langCode)
 	}
 
-	// Load Parakeet model (auto-download if missing)
+	// Register lazy Parakeet model
 	ortPath := *ortLib
 	if ortPath == "" {
 		for _, p := range []string{
@@ -215,42 +261,11 @@ func main() {
 			}
 		}
 	}
-
 	if ortPath != "" {
-		// Download parakeet model files
-		pkDir, err := mdl.EnsureModel(cache, mdl.ParakeetModel)
-		if err != nil {
-			log.Printf("[parakeet] Failed to get model: %v", err)
-		} else {
-			// Also need the preprocessor
-			mdl.EnsureModel(cache, mdl.ParakeetPreprocessor)
-
-			pkModel, err := parakeet.LoadModel(pkDir, ortPath)
-			if err != nil {
-				log.Printf("[parakeet] Failed to load: %v", err)
-			} else {
-				srv.parakeet = &parakeetTranscriber{model: pkModel}
-				log.Printf("[parakeet] Loaded: parakeet-tdt-0.6b-v3 (25 languages)")
-			}
-		}
+		srv.parakeet = &lazyParakeet{cacheDir: cache, ortPath: ortPath}
+		log.Printf("[parakeet] Registered: parakeet-tdt-0.6b-v3 (lazy)")
 	} else {
 		log.Printf("[parakeet] No ONNX Runtime found, skipping")
-	}
-
-	if len(srv.moonshine) == 0 && srv.parakeet == nil {
-		log.Fatal("No models loaded")
-	}
-
-	// Fix default lang/engine if not available
-	if srv.defaultEng == "moonshine" && srv.moonshine[srv.defaultLang] == nil {
-		for k := range srv.moonshine {
-			srv.defaultLang = k
-			break
-		}
-	}
-	if srv.defaultEng == "parakeet" && srv.parakeet == nil {
-		srv.defaultEng = "moonshine"
-		log.Printf("Parakeet not available, falling back to moonshine")
 	}
 
 	http.HandleFunc("/transcribe", func(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +292,7 @@ func main() {
 	if srv.parakeet != nil {
 		engines = append(engines, "parakeet(multilingual)")
 	}
-	log.Printf("lunartlk server listening on %s [engines: %s, default: %s/%s]",
+	log.Printf("lunartlk server listening on %s [engines: %s, default: %s/%s, lazy loading]",
 		*addr, strings.Join(engines, " "), srv.defaultEng, srv.defaultLang)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
