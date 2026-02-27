@@ -44,3 +44,15 @@ Key terms:
 
 See the full Moonshine LICENSE at:
 https://github.com/moonshine-ai/moonshine/blob/main/LICENSE
+
+## Parakeet v3 (parakeet-tdt-0.6b-v3)
+
+Licensed under **Creative Commons Attribution 4.0 International (CC BY 4.0)**.
+
+Copyright (c) NVIDIA Corporation.
+
+You are free to share and adapt the model for any purpose, including commercial,
+as long as you give appropriate credit.
+
+Full license: https://creativecommons.org/licenses/by/4.0/
+Model card: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3

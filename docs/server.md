@@ -1,6 +1,6 @@
 # lunartlk-server
 
-HTTP transcription server powered by Moonshine speech-to-text models. Accepts audio uploads and returns JSON transcripts.
+HTTP transcription server with two engines: Moonshine (fast, English/Spanish) and Parakeet v3 (25 languages, highest accuracy). Models download automatically on first use and are loaded lazily to minimize memory.
 
 ## Usage
 
@@ -13,30 +13,48 @@ lunartlk-server [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `-addr` | `:9765` | Listen address |
+| `-engine` | `moonshine` | Default engine (`moonshine`, `parakeet`) |
 | `-lang` | `es` | Default language (`en`, `es`) |
 | `-token` | | Require Bearer token for authentication |
-| `-models` | auto | Models root directory |
+| `-cache` | `~/.cache/lunartlk` | Cache directory for models |
+| `-ort` | auto | ONNX Runtime library path |
 | `-debug` | `false` | Log transcript text in request logs |
 | `-doctor` | | Run preflight checks and exit |
 
 ### Examples
 
 ```bash
-# Start with default settings (Spanish, port 9765)
+# Start with defaults (Moonshine, Spanish, port 9765)
 ./bin/lunartlk-server
 
-# Start with English as default
-./bin/lunartlk-server -lang en
+# Use Parakeet as default engine
+./bin/lunartlk-server -engine parakeet
 
-# Require authentication
-./bin/lunartlk-server -token mysecret
-
-# Custom port with debug logging
-./bin/lunartlk-server -addr :8080 -debug
+# English default with auth
+./bin/lunartlk-server -lang en -token mysecret
 
 # Check dependencies
 ./bin/lunartlk-server -doctor
 ```
+
+## Engines
+
+### Moonshine
+
+Fast, lightweight speech-to-text via the Moonshine C library. Separate models per language.
+
+| Model | Language | Size | License |
+|---|---|---|---|
+| `base-en` | English | ~135MB | MIT |
+| `base-es` | Spanish | ~62MB | Moonshine Community License |
+
+### Parakeet v3
+
+NVIDIA's Parakeet-TDT-0.6B-V3 via ONNX Runtime. Single model, 25 European languages, highest accuracy (WER ~2.1%).
+
+| Model | Languages | Size | License |
+|---|---|---|---|
+| `parakeet-tdt-0.6b-v3` | 25 (en, es, de, fr, ...) | ~640MB | CC BY 4.0 |
 
 ## API
 
@@ -48,19 +66,20 @@ Transcribe an audio file. Accepts `.wav` (16-bit PCM) and `.opus` uploads.
 
 | Param | Default | Description |
 |---|---|---|
-| `lang` | server default | Language: `en` or `es` |
+| `engine` | server default | Engine: `moonshine` or `parakeet` |
+| `lang` | server default | Language: `en`, `es` (moonshine only) |
 
 **Request:**
 
 ```bash
-# WAV file
+# Default engine
 curl -F 'audio=@recording.wav' http://localhost:9765/transcribe
 
-# Opus file
-curl -F 'audio=@recording.opus' http://localhost:9765/transcribe
+# Parakeet engine
+curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?engine=parakeet'
 
-# Specify language
-curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?lang=en'
+# Moonshine English
+curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?engine=moonshine&lang=en'
 
 # With authentication
 curl -H "Authorization: Bearer mysecret" -F 'audio=@recording.wav' http://localhost:9765/transcribe
@@ -70,32 +89,32 @@ curl -H "Authorization: Bearer mysecret" -F 'audio=@recording.wav' http://localh
 
 ```json
 {
-  "text": "Full transcript joined together.",
+  "text": "Ask not what your country can do for you.",
   "lines": [
     {
-      "text": "It was the best of times.",
-      "start_time": 0.992,
-      "duration": 3.936,
+      "text": "Ask not what your country can do for you.",
+      "start_time": 0.0,
+      "duration": 3.84,
       "speaker": 0
     }
   ],
-  "audio_duration": 44.374,
-  "processing_ms": 3098,
-  "model": "base-en",
+  "audio_duration": 3.845,
+  "processing_ms": 260,
+  "model": "parakeet-tdt-0.6b-v3",
   "lang": "en",
-  "arch": 1
+  "engine": "parakeet"
 }
 ```
 
 | Field | Description |
 |---|---|
 | `text` | Full transcript, all lines joined |
-| `lines` | Individual speech segments with timestamps |
+| `lines` | Individual speech segments with timestamps (moonshine only) |
 | `audio_duration` | Length of submitted audio in seconds |
 | `processing_ms` | Inference time in milliseconds |
 | `model` | Model name used |
 | `lang` | Language used |
-| `arch` | Model architecture ID |
+| `engine` | Engine used (`moonshine` or `parakeet`) |
 
 ### GET /health
 
@@ -103,46 +122,32 @@ Returns `ok` with status 200. Not affected by authentication.
 
 ## Authentication
 
-When started with `-token`, the server requires a `Bearer` token in the `Authorization` header for all `/transcribe` requests. Requests without a valid token receive `401 Unauthorized`.
-
-```bash
-# Server
-./bin/lunartlk-server -token mysecret
-
-# Client
-./bin/lunartlk-client -token mysecret
-
-# curl
-curl -H "Authorization: Bearer mysecret" -F 'audio=@recording.wav' http://localhost:9765/transcribe
-```
-
-The `/health` endpoint does not require authentication.
+When started with `-token`, all `/transcribe` requests require a `Bearer` token in the `Authorization` header. The `/health` endpoint is always open.
 
 ## How it works
 
-1. The server is distributed as a **self-extracting binary** that bundles the Go binary, shared libraries (`libmoonshine.so`, `libonnxruntime.so`), and model files.
-2. On first run, it extracts to a cache directory and re-executes with `LD_LIBRARY_PATH` set.
-3. At startup, it loads all bundled models (one per language) into memory.
-4. Each `/transcribe` request decodes the uploaded audio, runs it through the selected model's VAD + transcriber, and returns JSON.
+1. The server binary bundles shared libraries (`libmoonshine.so`, `libonnxruntime.so`) in a self-extracting wrapper.
+2. On first run, libraries extract to `~/.cache/lunartlk/`.
+3. Models are **not bundled** — they download automatically on first request for each engine/language.
+4. Models are **lazy-loaded** — only the engine you actually use consumes RAM.
+5. Subsequent starts are instant (cached libraries + models).
 
 ## Storage
 
 | Path | Description |
 |---|---|
-| `~/.cache/lunartlk/` | Extracted server binary, shared libraries, and models |
-| `~/.cache/lunartlk/.extracted` | Hash marker — re-extraction only happens when the binary changes |
+| `~/.cache/lunartlk/libs/` | Extracted shared libraries |
+| `~/.cache/lunartlk/models/base-en/` | Moonshine English model |
+| `~/.cache/lunartlk/models/base-es/` | Moonshine Spanish model |
+| `~/.cache/lunartlk/models/parakeet-v3-sherpa/` | Parakeet v3 model (encoder, decoder, joiner) |
+| `~/.cache/lunartlk/.extracted` | Hash marker for library extraction |
 
-Override the cache directory with `LUNARTLK_CACHE_DIR` or `XDG_CACHE_HOME`.
+Override the cache directory with `-cache`, `LUNARTLK_CACHE_DIR`, or `XDG_CACHE_HOME`.
 
-## Models
+## Model Licenses
 
-The server loads models from `<extract_dir>/models/<model-name>/`. Each model directory contains ONNX model files and a tokenizer.
+See [MODELS-LICENSE.md](../MODELS-LICENSE.md) for full details.
 
-Models bundled by default:
-
-| Model | Language | Architecture | License |
-|---|---|---|---|
-| `base-en` | English | 1 (base) | MIT |
-| `base-es` | Spanish | 1 (base) | Moonshine Community License |
-
-See [MODELS-LICENSE.md](../MODELS-LICENSE.md) for full license details.
+- **Moonshine English**: MIT
+- **Moonshine Spanish**: Moonshine Community License (non-commercial)
+- **Parakeet v3**: CC BY 4.0 (commercial OK with attribution)

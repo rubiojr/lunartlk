@@ -14,20 +14,24 @@ lunartlk-client [flags]
 |---|---|---|
 | `-server` | `http://localhost:9765` | Server URL |
 | `-token` | | Bearer token for server authentication |
+| `-engine` | | Engine override (`moonshine`, `parakeet`). Uses server default if omitted |
 | `-lang` | | Language override (`en`, `es`). Uses server default if omitted |
 | `-clipboard` | `false` | Copy transcript to clipboard via `wl-copy` |
-| `-no-save` | `false` | Don't save transcript JSON to disk |
+| `-no-save` | `false` | Don't save transcript JSON and audio to disk |
 | `-save-wav` | | Save recorded audio to a WAV file (for debugging) |
 | `-doctor` | | Run preflight checks and exit |
 
 ### Examples
 
 ```bash
-# Record and transcribe (default server)
+# Record and transcribe (default server/engine)
 ./bin/lunartlk-client
 
-# Specify server and language
-./bin/lunartlk-client -server http://myserver:9765 -lang en
+# Use Parakeet engine (25 languages, best accuracy)
+./bin/lunartlk-client -engine parakeet
+
+# Moonshine English
+./bin/lunartlk-client -engine moonshine -lang en
 
 # With authentication
 ./bin/lunartlk-client -server http://myserver:9765 -token mysecret

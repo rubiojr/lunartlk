@@ -1,8 +1,12 @@
 # lunartlk
 
-On-device speech-to-text. Record from your microphone, get a transcript back. Works in English and Spanish.
+On-device speech-to-text. Record from your microphone, get a transcript back.
 
-Powered by [Moonshine](https://github.com/moonshine-ai/moonshine) — runs locally, no cloud, no API keys.
+Two engines:
+- **Moonshine** — fast, lightweight (English + Spanish)
+- **Parakeet v3** — NVIDIA's best, 25 languages, highest accuracy
+
+Runs locally, no cloud, no API keys. Models download automatically on first use.
 
 ## Install
 
@@ -39,14 +43,14 @@ This clones Moonshine, builds the C library, downloads the English and Spanish m
 ./bin/lunartlk-server
 ```
 
-The server loads both language models and listens on port 9765. On first run it extracts bundled libraries and models to `~/.cache/lunartlk/`.
+The server listens on port 9765. Models download automatically on first request (lazy loading — only uses RAM for engines you actually call).
 
 ```bash
-# English as default language
-./bin/lunartlk-server -lang en
+# Use Parakeet as default engine (best accuracy)
+./bin/lunartlk-server -engine parakeet
 
-# Custom port
-./bin/lunartlk-server -addr :8080
+# English default with auth
+./bin/lunartlk-server -lang en -token mysecret
 ```
 
 ### Record and transcribe
@@ -58,11 +62,14 @@ The server loads both language models and listens on port 9765. On first run it 
 Speak, then press Ctrl+C. The recording is sent to the server and the transcript is printed.
 
 ```bash
-# Transcribe in English
+# Use Parakeet engine (25 languages)
+./bin/lunartlk-client -engine parakeet
+
+# Moonshine English
 ./bin/lunartlk-client -lang en
 
-# Remote server
-./bin/lunartlk-client -server http://myserver:9765
+# Remote server with auth
+./bin/lunartlk-client -server http://myserver:9765 -token mysecret
 
 # Copy result to Wayland clipboard
 ./bin/lunartlk-client -clipboard
@@ -71,8 +78,14 @@ Speak, then press Ctrl+C. The recording is sent to the server and the transcript
 ### Transcribe a file
 
 ```bash
+# Default engine
 curl -F 'audio=@recording.wav' http://localhost:9765/transcribe
-curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?lang=en'
+
+# Parakeet engine
+curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?engine=parakeet'
+
+# Moonshine English
+curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?engine=moonshine&lang=en'
 ```
 
 ### Check your setup
@@ -84,9 +97,9 @@ curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?lang=en'
 
 ## How it works
 
-The **client** records audio from your microphone, encodes it as Opus in real-time (~95% smaller than WAV), and POSTs it to the server. A backup WAV is saved to `/tmp/` in case the server is unreachable.
+The **client** records audio from your microphone, encodes it as Opus in real-time (~95% smaller than WAV), and POSTs it to the server. A backup WAV is saved to `/tmp/` in case the server is unreachable. Transcripts and audio are saved to `~/.local/share/lunartlk/`.
 
-The **server** is a single self-extracting file that bundles the Go binary, Moonshine C library, ONNX Runtime, and model weights. It decodes the audio, runs speech-to-text inference on CPU, and returns a JSON transcript with timestamps.
+The **server** bundles shared libraries in a self-extracting wrapper (~40MB). Models download automatically on first use (~200MB for Moonshine, ~640MB for Parakeet). Models are lazy-loaded — only the engine you request uses RAM.
 
 See [docs/client.md](docs/client.md) and [docs/server.md](docs/server.md) for full details.
 
