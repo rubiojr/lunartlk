@@ -13,8 +13,10 @@ lunartlk-client [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `-server` | `http://localhost:9765` | Server URL |
+| `-token` | | Bearer token for server authentication |
 | `-lang` | | Language override (`en`, `es`). Uses server default if omitted |
 | `-clipboard` | `false` | Copy transcript to clipboard via `wl-copy` |
+| `-no-save` | `false` | Don't save transcript JSON to disk |
 | `-save-wav` | | Save recorded audio to a WAV file (for debugging) |
 | `-doctor` | | Run preflight checks and exit |
 
@@ -26,6 +28,9 @@ lunartlk-client [flags]
 
 # Specify server and language
 ./bin/lunartlk-client -server http://myserver:9765 -lang en
+
+# With authentication
+./bin/lunartlk-client -server http://myserver:9765 -token mysecret
 
 # Copy result to Wayland clipboard
 ./bin/lunartlk-client -clipboard
@@ -61,15 +66,22 @@ Ctrl+C
               │                  [JSON response]
               │                        │
          (deleted on success)    [print transcript]
+                                       │
+                                       ▼
+                                 [save JSON transcript]
+                                 ~/.local/share/lunartlk/
 ```
 
 ## Storage
 
 | Path | Description |
 |---|---|
-| `/tmp/lunartlk-<timestamp>.wav` | Backup WAV of last recording. Deleted on successful transcription. Kept if server is unreachable so you can retry later. |
+| `~/.local/share/lunartlk/` | Saved transcripts (JSON, one per recording) |
+| `/tmp/lunartlk-<timestamp>.wav` | Backup WAV of last recording. Deleted on successful transcription. |
 
-The backup file uses the pattern `/tmp/lunartlk-<unix-timestamp>.wav`. If the server fails, the error message includes the full path:
+The transcript directory respects `XDG_DATA_HOME`. Each transcript is saved as `<timestamp>.json` (e.g., `2026-02-27T15-04-05.json`) containing the full server response.
+
+The backup WAV uses the pattern `/tmp/lunartlk-<unix-timestamp>.wav`. If the server fails, the error message includes the full path:
 
 ```
 ⚠  Server error: connection refused

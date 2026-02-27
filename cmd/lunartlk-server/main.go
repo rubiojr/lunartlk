@@ -54,6 +54,8 @@ type langConfig struct {
 type serverInfo struct {
 	langs       map[string]*loadedLang
 	defaultLang string
+	debug       bool
+	token       string
 }
 
 type loadedLang struct {
@@ -69,6 +71,8 @@ var defaultLangs = map[string]langConfig{
 
 func main() {
 	doctorFlag := flag.Bool("doctor", false, "run preflight checks and exit")
+	debugFlag := flag.Bool("debug", false, "log transcript text in request logs")
+	token := flag.String("token", "", "require Bearer token for authentication")
 	addr := flag.String("addr", ":9765", "listen address")
 	lang := flag.String("lang", "es", "default language (en, es)")
 	modelsRoot := flag.String("models", "", "models root directory (default: auto-detect from _MOONSHINE_DIR)")
@@ -95,6 +99,8 @@ func main() {
 	srv := serverInfo{
 		langs:       make(map[string]*loadedLang),
 		defaultLang: *lang,
+		debug:       *debugFlag,
+		token:       *token,
 	}
 
 	for langCode, cfg := range defaultLangs {
@@ -161,6 +167,14 @@ func main() {
 }
 
 func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
+	if srv.token != "" {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+srv.token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, 50<<20)
 
 	// Language selection: ?lang=en or ?lang=es, defaults to server default
@@ -260,4 +274,16 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+
+	if srv.debug {
+		logText := resp.Text
+		if len(logText) > 80 {
+			logText = logText[:80] + "..."
+		}
+		log.Printf("%s lang=%s fmt=%s audio=%.1fs proc=%dms text=%q",
+			r.RemoteAddr, langCode, filepath.Ext(name), audioDuration, processingMs, logText)
+	} else {
+		log.Printf("%s lang=%s fmt=%s audio=%.1fs proc=%dms",
+			r.RemoteAddr, langCode, filepath.Ext(name), audioDuration, processingMs)
+	}
 }

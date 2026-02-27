@@ -14,7 +14,9 @@ lunartlk-server [flags]
 |---|---|---|
 | `-addr` | `:9765` | Listen address |
 | `-lang` | `es` | Default language (`en`, `es`) |
+| `-token` | | Require Bearer token for authentication |
 | `-models` | auto | Models root directory |
+| `-debug` | `false` | Log transcript text in request logs |
 | `-doctor` | | Run preflight checks and exit |
 
 ### Examples
@@ -26,8 +28,11 @@ lunartlk-server [flags]
 # Start with English as default
 ./bin/lunartlk-server -lang en
 
-# Custom port
-./bin/lunartlk-server -addr :8080
+# Require authentication
+./bin/lunartlk-server -token mysecret
+
+# Custom port with debug logging
+./bin/lunartlk-server -addr :8080 -debug
 
 # Check dependencies
 ./bin/lunartlk-server -doctor
@@ -56,6 +61,9 @@ curl -F 'audio=@recording.opus' http://localhost:9765/transcribe
 
 # Specify language
 curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?lang=en'
+
+# With authentication
+curl -H "Authorization: Bearer mysecret" -F 'audio=@recording.wav' http://localhost:9765/transcribe
 ```
 
 **Response:**
@@ -91,7 +99,24 @@ curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?lang=en'
 
 ### GET /health
 
-Returns `ok` with status 200.
+Returns `ok` with status 200. Not affected by authentication.
+
+## Authentication
+
+When started with `-token`, the server requires a `Bearer` token in the `Authorization` header for all `/transcribe` requests. Requests without a valid token receive `401 Unauthorized`.
+
+```bash
+# Server
+./bin/lunartlk-server -token mysecret
+
+# Client
+./bin/lunartlk-client -token mysecret
+
+# curl
+curl -H "Authorization: Bearer mysecret" -F 'audio=@recording.wav' http://localhost:9765/transcribe
+```
+
+The `/health` endpoint does not require authentication.
 
 ## How it works
 

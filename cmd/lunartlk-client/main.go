@@ -51,8 +51,10 @@ type TranscriptResponse struct {
 func main() {
 	doctorFlag := flag.Bool("doctor", false, "run preflight checks and exit")
 	server := flag.String("server", "http://localhost:9765", "transcription server URL")
+	token := flag.String("token", "", "Bearer token for server authentication")
 	lang := flag.String("lang", "", "language for transcription (en, es)")
 	clipboard := flag.Bool("clipboard", false, "copy result to clipboard via wl-copy")
+	noSave := flag.Bool("no-save", false, "don't save transcript to disk")
 	saveWav := flag.String("save-wav", "", "save recorded audio to this WAV file for debugging")
 	flag.Parse()
 
@@ -168,7 +170,7 @@ done:
 	}
 
 	fmt.Fprintln(os.Stderr, "📡 Sending to server...")
-	resp, err := sendToServer(transcribeURL, opusData, "recording.opus")
+	resp, err := sendToServer(transcribeURL, opusData, "recording.opus", *token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Server error: %v\n", err)
 		fmt.Fprintf(os.Stderr, "💾 Audio saved at: %s\n", backupPath)
@@ -177,6 +179,11 @@ done:
 
 	// Success — remove backup
 	os.Remove(backupPath)
+
+	// Save transcript
+	if !*noSave {
+		saveTranscript(resp)
+	}
 
 	if resp.Text == "" {
 		fmt.Fprintln(os.Stderr, "No speech detected.")
@@ -192,7 +199,7 @@ done:
 	}
 }
 
-func sendToServer(url string, data []byte, filename string) (*TranscriptResponse, error) {
+func sendToServer(url string, data []byte, filename string, token string) (*TranscriptResponse, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -210,6 +217,9 @@ func sendToServer(url string, data []byte, filename string) (*TranscriptResponse
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -237,4 +247,35 @@ func copyToClipboard(text string) {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "📋 Copied to clipboard")
+}
+
+func transcriptDir() string {
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "lunartlk")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "lunartlk")
+}
+
+func saveTranscript(resp *TranscriptResponse) {
+	dir := transcriptDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Failed to create transcript dir: %v\n", err)
+		return
+	}
+
+	filename := time.Now().Format("2006-01-02T15-04-05") + ".json"
+	path := filepath.Join(dir, filename)
+
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Failed to marshal transcript: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Failed to save transcript: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "📝 Transcript saved to %s\n", path)
 }

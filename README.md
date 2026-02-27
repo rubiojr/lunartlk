@@ -1,55 +1,105 @@
 # lunartlk
 
-Self-contained speech-to-text toolkit powered by [Moonshine](https://github.com/moonshine-ai/moonshine).
+On-device speech-to-text. Record from your microphone, get a transcript back. Works in English and Spanish.
 
-## Quick Start
+Powered by [Moonshine](https://github.com/moonshine-ai/moonshine) — runs locally, no cloud, no API keys.
+
+## Install
+
+### Prerequisites
+
+**Fedora:**
+```bash
+sudo dnf install -y gcc gcc-c++ cmake git portaudio-devel \
+  pipewire-jack-audio-connection-kit-devel opus-devel opusfile-devel zstd
+```
+
+**Debian / Ubuntu / Raspberry Pi:**
+```bash
+sudo apt install -y build-essential cmake git portaudio19-dev \
+  libopus-dev libopusfile-dev zstd
+```
+
+Go 1.21+ is also required.
+
+### Build
 
 ```bash
-# Build everything (checks prereqs, clones moonshine, builds libs, downloads models, builds binaries)
+git clone <repo-url> lunartlk && cd lunartlk
 ./scripts/build.sh
+```
 
-# Start the server
+This clones Moonshine, builds the C library, downloads the English and Spanish models, and produces two binaries in `bin/`.
+
+## Usage
+
+### Start the server
+
+```bash
 ./bin/lunartlk-server
+```
 
-# In another terminal, record and transcribe
+The server loads both language models and listens on port 9765. On first run it extracts bundled libraries and models to `~/.cache/lunartlk/`.
+
+```bash
+# English as default language
+./bin/lunartlk-server -lang en
+
+# Custom port
+./bin/lunartlk-server -addr :8080
+```
+
+### Record and transcribe
+
+```bash
 ./bin/lunartlk-client
 ```
 
-## Components
-
-- **lunartlk-server** — Self-extracting HTTP transcription server (bundles libs + models)
-- **lunartlk-client** — Mic capture client, sends audio to server for transcription
-
-## Server API
+Speak, then press Ctrl+C. The recording is sent to the server and the transcript is printed.
 
 ```bash
-# Transcribe a WAV file
+# Transcribe in English
+./bin/lunartlk-client -lang en
+
+# Remote server
+./bin/lunartlk-client -server http://myserver:9765
+
+# Copy result to Wayland clipboard
+./bin/lunartlk-client -clipboard
+```
+
+### Transcribe a file
+
+```bash
 curl -F 'audio=@recording.wav' http://localhost:9765/transcribe
-
-# Health check
-curl http://localhost:9765/health
+curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?lang=en'
 ```
 
-## Build Options
+### Check your setup
 
 ```bash
-# Build with a specific model (default: base-es)
-MODEL=medium-streaming-en ARCH=5 ./scripts/build.sh
-
-# Available models:
-#   tiny-en (arch 0)           - fastest, English
-#   base-en (arch 1)           - good, English
-#   base-es (arch 1)           - good, Spanish (default)
-#   tiny-streaming-en (arch 2) - fast streaming, English
-#   base-streaming-en (arch 3) - good streaming, English
-#   small-streaming-en (arch 4)- better streaming, English
-#   medium-streaming-en (arch 5)- best streaming, English
+./bin/lunartlk-client -doctor
+./bin/lunartlk-server -doctor
 ```
 
-## Prerequisites (Fedora)
+## How it works
 
-```bash
-sudo dnf install -y gcc g++ cmake git portaudio-devel pipewire-jack-audio-connection-kit-devel zstd
-```
+The **client** records audio from your microphone, encodes it as Opus in real-time (~95% smaller than WAV), and POSTs it to the server. A backup WAV is saved to `/tmp/` in case the server is unreachable.
 
-Go 1.21+ required.
+The **server** is a single self-extracting file that bundles the Go binary, Moonshine C library, ONNX Runtime, and model weights. It decodes the audio, runs speech-to-text inference on CPU, and returns a JSON transcript with timestamps.
+
+See [docs/client.md](docs/client.md) and [docs/server.md](docs/server.md) for full details.
+
+## Supported platforms
+
+| Platform | Client | Server |
+|---|---|---|
+| Fedora (x86_64) | ✅ | ✅ |
+| Debian/Ubuntu (x86_64) | ✅ | ✅ |
+| Raspberry Pi 5 (arm64) | ✅ | ✅ |
+
+## License
+
+The code in this repository is MIT licensed.
+
+The bundled Moonshine models have their own licenses — English models are MIT, other languages use the Moonshine Community License (non-commercial). See [MODELS-LICENSE.md](MODELS-LICENSE.md) for details.
