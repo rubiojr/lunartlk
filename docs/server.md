@@ -13,7 +13,7 @@ lunartlk-server [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `-addr` | `:9765` | Listen address |
-| `-engine` | `moonshine` | Default engine (`moonshine`, `parakeet`) |
+| `-engine` | `parakeet` | Default engine (`moonshine`, `parakeet`) |
 | `-lang` | `es` | Default language (`en`, `es`) |
 | `-token` | | Require Bearer token for authentication |
 | `-cache` | `~/.cache/lunartlk` | Cache directory for models |
@@ -24,7 +24,7 @@ lunartlk-server [flags]
 ### Examples
 
 ```bash
-# Start with defaults (Moonshine, Spanish, port 9765)
+# Start with defaults (Parakeet, Spanish, port 9765)
 ./bin/lunartlk-server
 
 # Use Parakeet as default engine

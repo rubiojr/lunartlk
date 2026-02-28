@@ -204,7 +204,7 @@ func main() {
 	tokenFlag := flag.String("token", "", "require Bearer token for authentication")
 	addr := flag.String("addr", ":9765", "listen address")
 	lang := flag.String("lang", "es", "default language (en, es)")
-	engine := flag.String("engine", "moonshine", "default engine (moonshine, parakeet)")
+	engine := flag.String("engine", "parakeet", "default engine (moonshine, parakeet)")
 	cacheDir := flag.String("cache", "", "cache directory for models (default: ~/.cache/lunartlk)")
 	ortLib := flag.String("ort", "", "ONNX Runtime library path (default: auto-detect)")
 	flag.Parse()
