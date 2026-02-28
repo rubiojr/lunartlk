@@ -19,6 +19,7 @@ type Recorder struct {
 	recorded   []float32
 	mu         sync.Mutex
 	done       chan struct{}
+	stopped    chan struct{}
 }
 
 // NewRecorder initializes PortAudio and opens the default input stream.
@@ -41,6 +42,7 @@ func NewRecorder(sampleRate, chunkSize int) (*Recorder, error) {
 		stream:     stream,
 		buf:        buf,
 		done:       make(chan struct{}),
+		stopped:    make(chan struct{}),
 	}, nil
 }
 
@@ -54,6 +56,7 @@ func (r *Recorder) Start() error {
 }
 
 func (r *Recorder) capture() {
+	defer close(r.stopped)
 	for {
 		select {
 		case <-r.done:
@@ -75,6 +78,7 @@ func (r *Recorder) capture() {
 // Stop ends the recording and returns the captured samples.
 func (r *Recorder) Stop() []float32 {
 	close(r.done)
+	<-r.stopped // Read() returns within ~64ms, goroutine sees done and exits
 	r.stream.Stop()
 	r.stream.Close()
 

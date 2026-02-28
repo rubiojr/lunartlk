@@ -73,6 +73,12 @@ Speak, then press Ctrl+C. The recording is sent to the server and the transcript
 
 # Copy result to Wayland clipboard
 ./bin/lunartlk-client -clipboard
+
+# Translate transcript to English (requires Ollama)
+./bin/lunartlk-client -translate English
+
+# Translate using a specific Ollama model and host
+./bin/lunartlk-client -translate Spanish -ollama-model llama3 -ollama-host http://myhost:11434
 ```
 
 ### Transcribe a file
@@ -97,7 +103,7 @@ curl -F 'audio=@recording.wav' 'http://localhost:9765/transcribe?engine=moonshin
 
 ## How it works
 
-The **client** records audio from your microphone, encodes it as Opus in real-time (~95% smaller than WAV), and POSTs it to the server. A backup WAV is saved to `/tmp/` in case the server is unreachable. Transcripts and audio are saved to `~/.local/share/lunartlk/`.
+The **client** records audio from your microphone, encodes it as Opus in real-time (~95% smaller than WAV), and POSTs it to the server. A backup WAV is saved to `/tmp/` in case the server is unreachable. Transcripts and audio are saved to `~/.local/share/lunartlk/`. Optionally, transcripts can be translated via Ollama before output.
 
 The **server** bundles shared libraries in a self-extracting wrapper (~40MB). Models download automatically on first use (~200MB for Moonshine, ~640MB for Parakeet). Models are lazy-loaded — only the engine you request uses RAM.
 

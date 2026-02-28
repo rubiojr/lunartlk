@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"lunartlk/client"
 	"lunartlk/internal/audio"
 	"lunartlk/internal/doctor"
+	"lunartlk/translate"
 )
 
 const sampleRate = 16000
@@ -28,6 +30,9 @@ func main() {
 	clipboard := flag.Bool("clipboard", false, "copy result to clipboard via wl-copy")
 	noSave := flag.Bool("no-save", false, "don't save transcript to disk")
 	saveWav := flag.String("save-wav", "", "save recorded audio to this WAV file for debugging")
+	translateTo := flag.String("translate", "", "translate transcript to language (e.g. English, Spanish)")
+	ollamaModel := flag.String("ollama-model", "lfm2", "Ollama model for translation")
+	ollamaHost := flag.String("ollama-host", "", "Ollama server URL (default: $OLLAMA_HOST or http://localhost:11434)")
 	flag.Parse()
 
 	if *doctorFlag {
@@ -155,10 +160,30 @@ loop:
 
 	fmt.Fprintf(os.Stderr, "\n[%s/%s, lang=%s, %.1fs audio, %dms processing]\n",
 		resp.Engine, resp.Model, resp.Lang, resp.AudioDuration, resp.ProcessingMs)
-	fmt.Println(resp.Text)
+
+	output := resp.Text
+	if *translateTo != "" {
+		fmt.Fprintf(os.Stderr, "🌐 Translating to %s...\n", *translateTo)
+		var trOpts []translate.OllamaOption
+		trOpts = append(trOpts, translate.WithModel(*ollamaModel))
+		if *ollamaHost != "" {
+			trOpts = append(trOpts, translate.WithHost(*ollamaHost))
+		}
+		tr := translate.NewOllama(trOpts...)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		translated, err := tr.Translate(ctx, output, *translateTo)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Translation failed: %v\n", err)
+		} else {
+			output = translated
+		}
+	}
+
+	fmt.Println(output)
 
 	if *clipboard {
-		copyToClipboard(resp.Text)
+		copyToClipboard(output)
 	}
 }
 

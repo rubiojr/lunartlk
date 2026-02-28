@@ -16,7 +16,10 @@ lunartlk-client [flags]
 | `-token` | | Bearer token for server authentication |
 | `-engine` | | Engine override (`moonshine`, `parakeet`). Uses server default if omitted |
 | `-lang` | | Language override (`en`, `es`). Uses server default if omitted |
-| `-clipboard` | `false` | Copy transcript to clipboard via `wl-copy` |
+| `-translate` | | Translate transcript to a language (e.g. `English`, `Spanish`). Requires Ollama |
+| `-ollama-model` | `lfm2` | Ollama model for translation |
+| `-ollama-host` | `$OLLAMA_HOST` or `http://localhost:11434` | Ollama server URL |
+| `-clipboard` | `false` | Copy transcript (or translation) to clipboard via `wl-copy` |
 | `-no-save` | `false` | Don't save transcript JSON and audio to disk |
 | `-save-wav` | | Save recorded audio to a WAV file (for debugging) |
 | `-doctor` | | Run preflight checks and exit |
@@ -39,6 +42,15 @@ lunartlk-client [flags]
 # Copy result to Wayland clipboard
 ./bin/lunartlk-client -clipboard
 
+# Translate transcript to English
+./bin/lunartlk-client -translate English
+
+# Translate to Spanish using a specific model
+./bin/lunartlk-client -translate Spanish -ollama-model llama3
+
+# Translate using a remote Ollama host
+./bin/lunartlk-client -translate English -ollama-host http://myhost:11434
+
 # Save audio for debugging
 ./bin/lunartlk-client -save-wav /tmp/debug.wav
 
@@ -54,6 +66,7 @@ lunartlk-client [flags]
 4. A backup WAV file is saved to `/tmp/` before sending.
 5. Sends the Opus-encoded audio to the server's `/transcribe` endpoint.
 6. On success, prints the transcript and removes the backup. On failure, prints the backup path so no audio is lost.
+7. If `-translate` is set, the transcript is sent to Ollama for translation before printing.
 
 ### Recording flow
 
@@ -70,6 +83,9 @@ Ctrl+C
               │                  [JSON response]
               │                        │
          (deleted on success)    [print transcript]
+                                       │
+                                       ▼ (if -translate)
+                                 [Ollama translation]
                                        │
                                        ▼
                                  [save JSON transcript]
@@ -128,6 +144,37 @@ Status messages go to stderr, transcript goes to stdout. This means you can pipe
 [base-es, lang=es, 6.2s audio, 1250ms processing]
 Hola, ¿qué tal? ¿Cómo estás?
 ```
+
+### Example session with translation
+
+```
+🎙  Recording... press Ctrl+C to stop and transcribe
+⏹  Recorded 3.6s (57600 samples)
+🔊 Encoded: 112KB WAV → 8KB Opus
+📡 Sending to server...
+
+[parakeet/parakeet-tdt-0.6b-v3, lang=es, 3.6s audio, 413ms processing]
+🌐 Translating to English...
+Hello, how are you? How's it going?
+```
+
+## Translation
+
+The `-translate` flag enables post-transcription translation via [Ollama](https://ollama.com/). The transcript is sent to an Ollama LLM model which returns the translation using structured output (JSON schema) for reliable parsing.
+
+**Requirements:**
+- An Ollama server running with a pulled model
+- The model should support structured output (most modern models do)
+
+**Configuration:**
+
+| Source | Priority | Description |
+|---|---|---|
+| `-ollama-host` flag | Highest | Explicit host URL |
+| `OLLAMA_HOST` env | Default | Standard Ollama environment variable |
+| `http://localhost:11434` | Fallback | Default Ollama address |
+
+The host is normalized automatically — bare hostnames like `myhost` become `http://myhost:11434`.
 
 ## Audio format
 
