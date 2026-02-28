@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/hraban/opus"
+	"github.com/kazzmir/opus-go/opus"
 )
 
 const (
@@ -31,7 +31,7 @@ type StreamEncoder struct {
 
 // NewStreamEncoder creates a streaming Opus encoder.
 func NewStreamEncoder(bitrate int) (*StreamEncoder, error) {
-	enc, err := opus.NewEncoder(SampleRate, channels, opus.AppVoIP)
+	enc, err := opus.NewEncoder(SampleRate, channels, opus.ApplicationVoIP)
 	if err != nil {
 		return nil, fmt.Errorf("create encoder: %w", err)
 	}
@@ -44,6 +44,18 @@ func NewStreamEncoder(bitrate int) (*StreamEncoder, error) {
 	}, nil
 }
 
+// float32ToInt16 converts float32 PCM samples [-1.0, 1.0] to int16.
+func float32ToInt16(in []float32, out []int16) {
+	for i, s := range in {
+		if s > 1.0 {
+			s = 1.0
+		} else if s < -1.0 {
+			s = -1.0
+		}
+		out[i] = int16(s * 32767)
+	}
+}
+
 // Write adds PCM samples and encodes any complete frames.
 func (s *StreamEncoder) Write(samples []float32) error {
 	s.mu.Lock()
@@ -51,11 +63,13 @@ func (s *StreamEncoder) Write(samples []float32) error {
 
 	s.buf = append(s.buf, samples...)
 
+	pcm16 := make([]int16, FrameSize)
 	for len(s.buf) >= FrameSize {
 		pcm := s.buf[:FrameSize]
 		s.buf = s.buf[FrameSize:]
 
-		n, err := s.enc.EncodeFloat32(pcm, s.frame)
+		float32ToInt16(pcm, pcm16)
+		n, err := s.enc.Encode(pcm16, FrameSize, s.frame)
 		if err != nil {
 			return fmt.Errorf("encode frame: %w", err)
 		}
@@ -82,7 +96,9 @@ func (s *StreamEncoder) Flush() error {
 	copy(pcm, s.buf)
 	s.buf = nil
 
-	n, err := s.enc.EncodeFloat32(pcm, s.frame)
+	pcm16 := make([]int16, FrameSize)
+	float32ToInt16(pcm, pcm16)
+	n, err := s.enc.Encode(pcm16, FrameSize, s.frame)
 	if err != nil {
 		return fmt.Errorf("encode frame: %w", err)
 	}
@@ -129,6 +145,7 @@ func DecodeOpus(data []byte) ([]float32, int32, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("create decoder: %w", err)
 	}
+	defer dec.Close()
 
 	r := bytes.NewReader(data)
 	var samples []float32
@@ -148,7 +165,7 @@ func DecodeOpus(data []byte) ([]float32, int32, error) {
 			return nil, 0, fmt.Errorf("read frame data: %w", err)
 		}
 
-		n, err := dec.DecodeFloat32(frame, pcm)
+		n, err := dec.DecodeF32(frame, pcm, FrameSize, false)
 		if err != nil {
 			return nil, 0, fmt.Errorf("decode frame: %w", err)
 		}
