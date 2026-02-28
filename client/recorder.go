@@ -6,6 +6,7 @@ import "C"
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/gordonklaus/portaudio"
 )
@@ -20,6 +21,11 @@ type Recorder struct {
 	mu         sync.Mutex
 	done       chan struct{}
 	stopped    chan struct{}
+}
+
+// Segment is a chunk of recorded audio delivered by StartContinuous.
+type Segment struct {
+	Samples []float32
 }
 
 // NewRecorder initializes PortAudio and opens the default input stream.
@@ -76,21 +82,79 @@ func (r *Recorder) capture() {
 }
 
 // Stop ends the recording and returns the captured samples.
+// The recorder can be restarted by calling Start again.
 func (r *Recorder) Stop() []float32 {
 	close(r.done)
-	<-r.stopped // Read() returns within ~64ms, goroutine sees done and exits
+	<-r.stopped
 	r.stream.Stop()
-	r.stream.Close()
 
 	r.mu.Lock()
 	samples := r.recorded
 	r.recorded = nil
 	r.mu.Unlock()
 
+	// Reset channels for reuse
+	r.done = make(chan struct{})
+	r.stopped = make(chan struct{})
+
 	return samples
 }
 
-// Close terminates PortAudio. Must be called after Stop.
+// Close releases the PortAudio stream and terminates PortAudio.
 func (r *Recorder) Close() error {
+	r.stream.Close()
 	return portaudio.Terminate()
+}
+
+// StartContinuous begins recording and delivers audio segments of the given
+// duration to the returned channel. Recording continues until StopContinuous
+// is called. The stream stays open between segments (no gaps).
+func (r *Recorder) StartContinuous(segmentDuration time.Duration) (<-chan Segment, error) {
+	if err := r.stream.Start(); err != nil {
+		return nil, fmt.Errorf("start mic: %w", err)
+	}
+
+	r.done = make(chan struct{})
+	r.stopped = make(chan struct{})
+	ch := make(chan Segment, 2)
+	samplesPerSegment := int(segmentDuration.Seconds()) * r.sampleRate
+
+	go func() {
+		defer close(r.stopped)
+		defer close(ch)
+
+		var segment []float32
+		for {
+			select {
+			case <-r.done:
+				// Deliver any remaining audio
+				if len(segment) > 0 {
+					ch <- Segment{Samples: segment}
+				}
+				return
+			default:
+			}
+
+			if err := r.stream.Read(); err != nil {
+				return
+			}
+			chunk := make([]float32, r.chunkSize)
+			copy(chunk, r.buf)
+			segment = append(segment, chunk...)
+
+			if len(segment) >= samplesPerSegment {
+				ch <- Segment{Samples: segment}
+				segment = nil
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+// StopContinuous stops a continuous recording session.
+func (r *Recorder) StopContinuous() {
+	close(r.done)
+	<-r.stopped
+	r.stream.Stop()
 }
