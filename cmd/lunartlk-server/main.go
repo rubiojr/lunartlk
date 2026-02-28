@@ -199,7 +199,6 @@ type serverInfo struct {
 	token       string
 }
 
-
 func main() {
 	doctorFlag := flag.Bool("doctor", false, "run preflight checks and exit")
 	debugFlag := flag.Bool("debug", false, "log transcript text in request logs")

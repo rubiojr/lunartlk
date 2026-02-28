@@ -49,10 +49,10 @@ func makeOpusHead(sampleRate, channels int) []byte {
 	buf.WriteString("OpusHead")
 	buf.WriteByte(1) // version
 	buf.WriteByte(byte(channels))
-	binary.Write(&buf, binary.LittleEndian, uint16(0))               // pre-skip
-	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate))      // input sample rate
-	binary.Write(&buf, binary.LittleEndian, int16(0))                // output gain
-	buf.WriteByte(0)                                                  // channel mapping family
+	binary.Write(&buf, binary.LittleEndian, uint16(0))          // pre-skip
+	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate)) // input sample rate
+	binary.Write(&buf, binary.LittleEndian, int16(0))           // output gain
+	buf.WriteByte(0)                                            // channel mapping family
 	return buf.Bytes()
 }
 
@@ -82,14 +82,14 @@ func writeOggPage(buf *bytes.Buffer, serial uint32, granule uint64, seqNo uint32
 
 	// Header (27 bytes + segment table)
 	var hdr bytes.Buffer
-	hdr.WriteString("OggS")                                          // capture pattern
-	hdr.WriteByte(0)                                                  // version
-	hdr.WriteByte(flags)                                              // header type
-	binary.Write(&hdr, binary.LittleEndian, granule)                 // granule position
-	binary.Write(&hdr, binary.LittleEndian, serial)                  // serial number
-	binary.Write(&hdr, binary.LittleEndian, seqNo)                   // page sequence
-	binary.Write(&hdr, binary.LittleEndian, uint32(0))               // CRC placeholder
-	hdr.WriteByte(byte(len(segTable)))                                // number of segments
+	hdr.WriteString("OggS")                            // capture pattern
+	hdr.WriteByte(0)                                   // version
+	hdr.WriteByte(flags)                               // header type
+	binary.Write(&hdr, binary.LittleEndian, granule)   // granule position
+	binary.Write(&hdr, binary.LittleEndian, serial)    // serial number
+	binary.Write(&hdr, binary.LittleEndian, seqNo)     // page sequence
+	binary.Write(&hdr, binary.LittleEndian, uint32(0)) // CRC placeholder
+	hdr.WriteByte(byte(len(segTable)))                 // number of segments
 	hdr.Write(segTable)
 
 	// Collect page data

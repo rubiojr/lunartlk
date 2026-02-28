@@ -1,17 +1,10 @@
 package main
 
-// #cgo pkg-config: portaudio-2.0 jack
-import "C"
-
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"mime/multipart"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,32 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"lunartlk/client"
 	"lunartlk/internal/audio"
 	"lunartlk/internal/doctor"
-
 	"lunartlk/internal/wav"
-
-	"github.com/gordonklaus/portaudio"
 )
 
 const sampleRate = 16000
-
-type TranscriptLine struct {
-	Text      string  `json:"text"`
-	StartTime float64 `json:"start_time"`
-	Duration  float64 `json:"duration"`
-}
-
-type TranscriptResponse struct {
-	Text          string           `json:"text"`
-	Lines         []TranscriptLine `json:"lines"`
-	AudioDuration float64          `json:"audio_duration"`
-	ProcessingMs  int64            `json:"processing_ms"`
-	Model         string           `json:"model"`
-	Lang          string           `json:"lang"`
-	Engine        string           `json:"engine"`
-	Arch          int              `json:"arch"`
-}
 
 func main() {
 	doctorFlag := flag.Bool("doctor", false, "run preflight checks and exit")
@@ -66,21 +40,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := portaudio.Initialize(); err != nil {
-		log.Fatalf("PortAudio init failed: %v", err)
-	}
-
-	chunkSize := 1024
-	buf := make([]float32, chunkSize)
-	var recorded []float32
-
-	stream, err := portaudio.OpenDefaultStream(1, 0, float64(sampleRate), chunkSize, buf)
+	rec, err := client.NewRecorder(sampleRate, 1024)
 	if err != nil {
-		log.Fatalf("Failed to open mic: %v", err)
+		log.Fatalf("Recorder init failed: %v", err)
 	}
+	defer rec.Close()
 
-	if err := stream.Start(); err != nil {
-		log.Fatalf("Failed to start mic: %v", err)
+	if err := rec.Start(); err != nil {
+		log.Fatalf("Failed to start recording: %v", err)
 	}
 
 	fmt.Fprintln(os.Stderr, "🎙  Recording... press Ctrl+C to stop and transcribe")
@@ -95,33 +62,21 @@ func main() {
 	}()
 
 	start := time.Now()
-	lastPrint := start
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
+loop:
 	for {
 		select {
 		case <-stopped:
-			goto done
-		default:
-		}
-
-		if err := stream.Read(); err != nil {
-			break
-		}
-		chunk := make([]float32, chunkSize)
-		copy(chunk, buf)
-		recorded = append(recorded, chunk...)
-
-		if time.Since(lastPrint) >= 100*time.Millisecond {
+			break loop
+		case <-ticker.C:
 			elapsed := time.Since(start).Truncate(100 * time.Millisecond)
 			fmt.Fprintf(os.Stderr, "\r⏱  %s", elapsed)
-			lastPrint = time.Now()
 		}
 	}
-done:
 
-	stream.Stop()
-	stream.Close()
-	portaudio.Terminate()
+	recorded := rec.Stop()
 
 	// Pad 1s of silence so the model doesn't clip the last word
 	pad := make([]float32, sampleRate)
@@ -135,8 +90,8 @@ done:
 		return
 	}
 
-	// Normalize audio volume
-	normalizeAudio(recorded)
+	peak, gain := client.NormalizeAudio(recorded)
+	fmt.Fprintf(os.Stderr, "🔈 Peak: %.3f, gain: %.1fx\n", peak, gain)
 
 	// Encode normalized audio as Opus
 	opusEnc, err := audio.NewStreamEncoder(64000)
@@ -165,21 +120,20 @@ done:
 	oggData := opusEnc.OggBytes()
 	fmt.Fprintf(os.Stderr, "🔊 Encoded: %dKB WAV → %dKB Opus\n", len(wavData)/1024, len(opusData)/1024)
 
-	serverURL := strings.TrimRight(*server, "/")
-	transcribeURL := serverURL + "/transcribe"
-	var params []string
+	var opts []client.Option
+	if *token != "" {
+		opts = append(opts, client.WithToken(*token))
+	}
 	if *lang != "" {
-		params = append(params, "lang="+*lang)
+		opts = append(opts, client.WithLang(*lang))
 	}
 	if *engineFlag != "" {
-		params = append(params, "engine="+*engineFlag)
+		opts = append(opts, client.WithEngine(*engineFlag))
 	}
-	if len(params) > 0 {
-		transcribeURL += "?" + strings.Join(params, "&")
-	}
+	tc := client.New(*server, opts...)
 
 	fmt.Fprintln(os.Stderr, "📡 Sending to server...")
-	resp, err := sendToServer(transcribeURL, opusData, "recording.opus", *token)
+	resp, err := tc.Transcribe(opusData, "recording.opus")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Server error: %v\n", err)
 		fmt.Fprintf(os.Stderr, "💾 Audio saved at: %s\n", backupPath)
@@ -209,46 +163,6 @@ done:
 	}
 }
 
-func sendToServer(url string, data []byte, filename string, token string) (*TranscriptResponse, error) {
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-
-	part, err := writer.CreateFormFile("audio", filename)
-	if err != nil {
-		return nil, fmt.Errorf("create form file: %w", err)
-	}
-	if _, err := part.Write(data); err != nil {
-		return nil, fmt.Errorf("write audio: %w", err)
-	}
-	writer.Close()
-
-	req, err := http.NewRequest("POST", url, &body)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
-	}
-
-	var result TranscriptResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return &result, nil
-}
-
 func copyToClipboard(text string) {
 	cmd := exec.Command("wl-copy")
 	cmd.Stdin = strings.NewReader(text)
@@ -267,7 +181,7 @@ func dataDir() string {
 	return filepath.Join(home, ".local", "share", "lunartlk")
 }
 
-func saveTranscript(resp *TranscriptResponse) {
+func saveTranscript(resp *client.TranscriptResponse) {
 	dir := filepath.Join(dataDir(), "transcripts")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Failed to create transcript dir: %v\n", err)
@@ -305,23 +219,4 @@ func saveAudio(opusData []byte) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "🔊 Audio saved to %s\n", path)
-}
-
-func normalizeAudio(samples []float32) {
-	var peak float32
-	for _, s := range samples {
-		if s > peak {
-			peak = s
-		} else if -s > peak {
-			peak = -s
-		}
-	}
-	if peak < 0.001 {
-		return
-	}
-	gain := float32(0.9) / peak
-	fmt.Fprintf(os.Stderr, "🔈 Peak: %.3f, gain: %.1fx\n", peak, gain)
-	for i := range samples {
-		samples[i] *= gain
-	}
 }
