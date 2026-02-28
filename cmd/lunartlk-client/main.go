@@ -15,7 +15,6 @@ import (
 	"lunartlk/client"
 	"lunartlk/internal/audio"
 	"lunartlk/internal/doctor"
-	"lunartlk/internal/wav"
 )
 
 const sampleRate = 16000
@@ -102,7 +101,7 @@ loop:
 	opusEnc.Flush()
 
 	// Save backup WAV before sending
-	wavData := wav.Encode(recorded, sampleRate)
+	wavData := audio.EncodeWAV(recorded, sampleRate)
 	backupPath := filepath.Join(os.TempDir(), fmt.Sprintf("lunartlk-%d.wav", time.Now().Unix()))
 	if err := os.WriteFile(backupPath, wavData, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Failed to save backup: %v\n", err)

@@ -28,7 +28,6 @@ import (
 	"lunartlk/internal/doctor"
 	mdl "lunartlk/internal/models"
 	"lunartlk/internal/parakeet"
-	"lunartlk/internal/wav"
 )
 
 type TranscriptLine struct {
@@ -361,7 +360,7 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, srv *serverInfo) {
 
 	switch {
 	case strings.HasSuffix(name, ".wav"):
-		samples, sampleRate, err = wav.Decode(data)
+		samples, sampleRate, err = audio.DecodeWAV(data)
 	case strings.HasSuffix(name, ".opus"):
 		samples, sampleRate, err = audio.DecodeOpus(data)
 	default:

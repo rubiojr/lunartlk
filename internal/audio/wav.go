@@ -1,12 +1,12 @@
-package wav
+package audio
 
 import (
 	"encoding/binary"
 	"fmt"
 )
 
-// Decode parses a WAV file and returns float32 samples and sample rate.
-func Decode(data []byte) ([]float32, int32, error) {
+// DecodeWAV parses a WAV file and returns float32 samples and sample rate.
+func DecodeWAV(data []byte) ([]float32, int32, error) {
 	if len(data) < 44 {
 		return nil, 0, fmt.Errorf("file too small for WAV header")
 	}
@@ -51,8 +51,8 @@ func Decode(data []byte) ([]float32, int32, error) {
 	return nil, 0, fmt.Errorf("missing fmt or data chunk")
 }
 
-// Encode creates a 16-bit mono PCM WAV from float32 samples.
-func Encode(samples []float32, sampleRate int) []byte {
+// EncodeWAV creates a 16-bit mono PCM WAV from float32 samples.
+func EncodeWAV(samples []float32, sampleRate int) []byte {
 	numSamples := len(samples)
 	dataSize := numSamples * 2
 	fileSize := 36 + dataSize
