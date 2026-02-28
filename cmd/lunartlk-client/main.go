@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"lunartlk/client"
-	"lunartlk/internal/audio"
-	"lunartlk/internal/doctor"
-	"lunartlk/translate"
+	"github.com/rubiojr/lunartlk/client"
+	"github.com/rubiojr/lunartlk/internal/audio"
+	"github.com/rubiojr/lunartlk/internal/doctor"
+	"github.com/rubiojr/lunartlk/translate"
 )
 
 const sampleRate = 16000

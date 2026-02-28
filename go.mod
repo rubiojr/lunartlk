@@ -1,4 +1,4 @@
-module lunartlk
+module github.com/rubiojr/lunartlk
 
 go 1.26
 

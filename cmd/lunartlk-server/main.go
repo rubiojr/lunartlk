@@ -24,10 +24,10 @@ import (
 	"time"
 	"unsafe"
 
-	"lunartlk/internal/audio"
-	"lunartlk/internal/doctor"
-	mdl "lunartlk/internal/models"
-	"lunartlk/internal/parakeet"
+	"github.com/rubiojr/lunartlk/internal/audio"
+	"github.com/rubiojr/lunartlk/internal/doctor"
+	mdl "github.com/rubiojr/lunartlk/internal/models"
+	"github.com/rubiojr/lunartlk/internal/parakeet"
 )
 
 type TranscriptLine struct {
