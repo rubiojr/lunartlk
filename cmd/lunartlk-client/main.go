@@ -1,9 +1,6 @@
 package main
 
-// #cgo pkg-config: portaudio-2.0
-// #cgo LDFLAGS: -Wl,--as-needed -Wl,--disable-new-dtags
-// #cgo linux,amd64 LDFLAGS: -L/usr/lib64/pipewire-0.3/jack -Wl,-rpath,/usr/lib64/pipewire-0.3/jack
-// #cgo linux,arm64 LDFLAGS: -L/usr/lib/aarch64-linux-gnu/pipewire-0.3/jack -Wl,-rpath,/usr/lib/aarch64-linux-gnu/pipewire-0.3/jack
+// #cgo pkg-config: portaudio-2.0 jack
 import "C"
 
 import (
