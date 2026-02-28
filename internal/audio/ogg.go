@@ -23,7 +23,7 @@ func OggOpus(opusFrames [][]byte, sampleRate, channels int) []byte {
 	var pageFrames [][]byte
 	var granulePos uint64
 	pageSeq := uint32(2)
-	samplesPerFrame := uint64(opusFrameSize) // 960 samples = 20ms at 48kHz
+	samplesPerFrame := uint64(FrameSize) // 320 samples = 20ms at 16kHz
 
 	for i, frame := range opusFrames {
 		pageFrames = append(pageFrames, frame)

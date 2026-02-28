@@ -112,15 +112,24 @@ preflight() {
         warn "libjack not found (may be needed by PortAudio on some systems)"
     fi
 
+    # Opus
+    if pkg-config --exists opus opusfile 2>/dev/null; then
+        printf "  %-20s %s\n" "opus-dev" "$(pkg-config --modversion opus)"
+    else
+        error "Missing: opus/opusfile dev headers"
+        ok=false
+    fi
+
     if [ "$ok" = false ]; then
         echo ""
         if is_debian; then
             echo "Install missing dependencies (Debian/Ubuntu/RPi):"
-            echo "  sudo apt install -y build-essential cmake git git-lfs portaudio19-dev zstd"
+            echo "  sudo apt install -y build-essential cmake git git-lfs portaudio19-dev \\"
+            echo "    libopus-dev libopusfile-dev zstd"
         else
             echo "Install missing dependencies (Fedora):"
             echo "  sudo dnf install -y gcc gcc-c++ cmake git git-lfs portaudio-devel \\"
-            echo "    pipewire-jack-audio-connection-kit-devel zstd"
+            echo "    pipewire-jack-audio-connection-kit-devel opus-devel opusfile-devel zstd"
         fi
         echo ""
         die "Preflight check failed"

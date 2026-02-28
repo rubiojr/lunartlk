@@ -31,6 +31,9 @@ func RunChecks(role string) []CheckResult {
 		results = append(results, checkLib("libportaudio"))
 	}
 
+	// Opus
+	results = append(results, checkLib("libopus"))
+
 	// JACK (optional)
 	if role == "client" {
 		jack := checkLib("libjack")
@@ -81,9 +84,9 @@ func PrintResults(results []CheckResult) bool {
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Install missing dependencies:")
 		if isDebian() {
-			fmt.Fprintln(os.Stderr, "  sudo apt install -y libportaudio2 libportaudio-dev zstd")
+			fmt.Fprintln(os.Stderr, "  sudo apt install -y libportaudio2 libportaudio-dev libopus-dev libopusfile-dev zstd")
 		} else {
-			fmt.Fprintln(os.Stderr, "  sudo dnf install -y portaudio-devel pipewire-jack-audio-connection-kit-devel zstd")
+			fmt.Fprintln(os.Stderr, "  sudo dnf install -y portaudio-devel opus-devel opusfile-devel pipewire-jack-audio-connection-kit-devel zstd")
 		}
 	}
 

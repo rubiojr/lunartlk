@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/kazzmir/opus-go/opus"
+	"github.com/hraban/opus"
 )
 
 const (
@@ -17,11 +17,6 @@ const (
 	channels   = 1
 	// Max encoded frame size
 	maxFrameBytes = 1024
-
-	// Opus internal rate — kazzmir/opus-go requires 48kHz for encode/decode.
-	opusRate      = 48000
-	opusFrameSize = 960 // 20ms at 48kHz
-	resampleRatio = opusRate / SampleRate // 3
 )
 
 // StreamEncoder encodes PCM audio to Opus incrementally.
@@ -36,7 +31,7 @@ type StreamEncoder struct {
 
 // NewStreamEncoder creates a streaming Opus encoder.
 func NewStreamEncoder(bitrate int) (*StreamEncoder, error) {
-	enc, err := opus.NewEncoder(opusRate, channels, opus.ApplicationVoIP)
+	enc, err := opus.NewEncoder(SampleRate, channels, opus.AppVoIP)
 	if err != nil {
 		return nil, fmt.Errorf("create encoder: %w", err)
 	}
@@ -49,38 +44,6 @@ func NewStreamEncoder(bitrate int) (*StreamEncoder, error) {
 	}, nil
 }
 
-// float32ToInt16 converts float32 PCM samples [-1.0, 1.0] to int16.
-func float32ToInt16(in []float32, out []int16) {
-	for i, s := range in {
-		if s > 1.0 {
-			s = 1.0
-		} else if s < -1.0 {
-			s = -1.0
-		}
-		out[i] = int16(s * 32767)
-	}
-}
-
-// upsample16to48 replicates each sample 3x (16kHz → 48kHz, mono).
-func upsample16to48(in []int16) []int16 {
-	out := make([]int16, len(in)*resampleRatio)
-	for i, s := range in {
-		for j := 0; j < resampleRatio; j++ {
-			out[i*resampleRatio+j] = s
-		}
-	}
-	return out
-}
-
-// downsample48to16 picks every 3rd sample (48kHz → 16kHz, mono).
-func downsample48to16(in []float32) []float32 {
-	out := make([]float32, len(in)/resampleRatio)
-	for i := range out {
-		out[i] = in[i*resampleRatio]
-	}
-	return out
-}
-
 // Write adds PCM samples and encodes any complete frames.
 func (s *StreamEncoder) Write(samples []float32) error {
 	s.mu.Lock()
@@ -88,14 +51,11 @@ func (s *StreamEncoder) Write(samples []float32) error {
 
 	s.buf = append(s.buf, samples...)
 
-	pcm16 := make([]int16, FrameSize)
 	for len(s.buf) >= FrameSize {
 		pcm := s.buf[:FrameSize]
 		s.buf = s.buf[FrameSize:]
 
-		float32ToInt16(pcm, pcm16)
-		pcm48 := upsample16to48(pcm16)
-		n, err := s.enc.Encode(pcm48, opusFrameSize, s.frame)
+		n, err := s.enc.EncodeFloat32(pcm, s.frame)
 		if err != nil {
 			return fmt.Errorf("encode frame: %w", err)
 		}
@@ -122,10 +82,7 @@ func (s *StreamEncoder) Flush() error {
 	copy(pcm, s.buf)
 	s.buf = nil
 
-	pcm16 := make([]int16, FrameSize)
-	float32ToInt16(pcm, pcm16)
-	pcm48 := upsample16to48(pcm16)
-	n, err := s.enc.Encode(pcm48, opusFrameSize, s.frame)
+	n, err := s.enc.EncodeFloat32(pcm, s.frame)
 	if err != nil {
 		return fmt.Errorf("encode frame: %w", err)
 	}
@@ -148,7 +105,7 @@ func (s *StreamEncoder) Bytes() []byte {
 func (s *StreamEncoder) OggBytes() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return OggOpus(s.frames, opusRate, channels)
+	return OggOpus(s.frames, SampleRate, channels)
 }
 
 // EncodeOpus encodes float32 PCM samples to Opus in one shot.
@@ -168,15 +125,14 @@ func EncodeOpus(samples []float32, bitrate int) ([]byte, error) {
 
 // DecodeOpus decodes an Opus stream back to float32 PCM samples.
 func DecodeOpus(data []byte) ([]float32, int32, error) {
-	dec, err := opus.NewDecoder(opusRate, channels)
+	dec, err := opus.NewDecoder(SampleRate, channels)
 	if err != nil {
 		return nil, 0, fmt.Errorf("create decoder: %w", err)
 	}
-	defer dec.Close()
 
 	r := bytes.NewReader(data)
 	var samples []float32
-	pcm := make([]float32, opusFrameSize)
+	pcm := make([]float32, FrameSize)
 
 	for {
 		var frameLen uint16
@@ -192,12 +148,12 @@ func DecodeOpus(data []byte) ([]float32, int32, error) {
 			return nil, 0, fmt.Errorf("read frame data: %w", err)
 		}
 
-		n, err := dec.DecodeF32(frame, pcm, opusFrameSize, false)
+		n, err := dec.DecodeFloat32(frame, pcm)
 		if err != nil {
 			return nil, 0, fmt.Errorf("decode frame: %w", err)
 		}
 
-		samples = append(samples, downsample48to16(pcm[:n])...)
+		samples = append(samples, pcm[:n]...)
 	}
 
 	return samples, SampleRate, nil

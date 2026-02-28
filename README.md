@@ -15,12 +15,13 @@ Runs locally, no cloud, no API keys. Models download automatically on first use.
 **Fedora:**
 ```bash
 sudo dnf install -y gcc gcc-c++ cmake git portaudio-devel \
-  pipewire-jack-audio-connection-kit-devel zstd
+  pipewire-jack-audio-connection-kit-devel opus-devel opusfile-devel zstd
 ```
 
 **Debian / Ubuntu / Raspberry Pi:**
 ```bash
-sudo apt install -y build-essential cmake git portaudio19-dev zstd
+sudo apt install -y build-essential cmake git portaudio19-dev \
+  libopus-dev libopusfile-dev zstd
 ```
 
 Go 1.21+ is also required.
